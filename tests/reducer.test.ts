@@ -95,6 +95,30 @@ describe("desktop reducer", () => {
     expect(state.sessionState.activeTurn).toBeNull();
   });
 
+  it("preserves progress and tool hint messages when rebuilding history", () => {
+    let state = makeConnected();
+    state = desktopReducer(state, {
+      type: "event/received",
+      event: {
+        type: "history_snapshot",
+        session_id: "desktop:desktop-client",
+        messages: [
+          { role: "user", content: "先查一下" },
+          { role: "tool_hint", content: "正在调用 skill", tool_hint: true },
+          { kind: "progress", role: "progress", content: "skill 返回中" },
+          { role: "assistant", content: "已经查完了" },
+        ],
+      },
+    });
+
+    expect(state.sessionState.messages).toHaveLength(4);
+    expect(state.sessionState.messages[1].kind).toBe("progress");
+    expect(state.sessionState.messages[1].role).toBe("tool_hint");
+    expect(state.sessionState.messages[2].kind).toBe("progress");
+    expect(state.sessionState.messages[2].role).toBe("progress");
+    expect(state.sessionState.messages[3].kind).toBe("assistant");
+  });
+
   it("appends local user message before assistant replies", () => {
     let state = makeConnected();
     state = desktopReducer(state, {

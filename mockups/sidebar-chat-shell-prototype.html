@@ -1,0 +1,907 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nomi Desktop Sidebar Prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-app: #1e1e1c;
+        --bg-shell: #232321;
+        --bg-sidebar: rgba(27, 29, 31, 0.92);
+        --bg-sidebar-soft: rgba(255, 255, 255, 0.04);
+        --bg-card: rgba(255, 255, 255, 0.05);
+        --bg-card-strong: rgba(255, 255, 255, 0.08);
+        --bg-input: rgba(255, 255, 255, 0.035);
+        --line: rgba(255, 255, 255, 0.08);
+        --line-strong: rgba(255, 255, 255, 0.14);
+        --text-main: #f3f4f6;
+        --text-secondary: #a7adb7;
+        --text-muted: #737883;
+        --accent: #d9dde4;
+        --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+        --radius-shell: 28px;
+        --radius-card: 18px;
+        --sidebar-width: 338px;
+        --workspace-width: 320px;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at top left, rgba(95, 109, 132, 0.16), transparent 28%),
+          linear-gradient(180deg, #1a1a18 0%, #151514 100%);
+        color: var(--text-main);
+      }
+
+      body {
+        min-height: 100vh;
+        padding: 28px;
+      }
+
+      .frame {
+        position: relative;
+        min-height: calc(100vh - 56px);
+        border-radius: var(--radius-shell);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 20%),
+          var(--bg-shell);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .shell {
+        position: relative;
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+        min-height: calc(100vh - 56px);
+        height: calc(100vh - 56px);
+        padding: 14px;
+        gap: 14px;
+        transition: grid-template-columns 220ms ease;
+        overflow: hidden;
+      }
+
+      .shell.sidebar-collapsed {
+        grid-template-columns: 0 minmax(0, 1fr);
+      }
+
+      .sidebar {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 18px 14px 12px;
+        background: var(--bg-sidebar);
+        border: 1px solid rgba(114, 137, 166, 0.26);
+        border-radius: 24px;
+        backdrop-filter: blur(28px);
+        overflow: hidden;
+        height: 100%;
+        min-height: 0;
+        box-shadow:
+          0 20px 44px rgba(0, 0, 0, 0.28),
+          inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        transition:
+          opacity 220ms ease,
+          transform 220ms ease,
+          border-color 220ms ease,
+          padding 220ms ease;
+      }
+
+      .shell.sidebar-collapsed .sidebar {
+        opacity: 0;
+        transform: translateX(-18px) scale(0.985);
+        border-right-color: transparent;
+        padding-left: 0;
+        padding-right: 0;
+      }
+
+      .sidebar-topbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .traffic {
+        display: flex;
+        gap: 8px;
+        margin-right: 4px;
+      }
+
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+      }
+
+      .dot.red { background: #ff5f57; }
+      .dot.yellow { background: #febc2e; }
+      .dot.green { background: #28c840; }
+
+      .icon-button,
+      .pill-button {
+        border: 0;
+        color: var(--text-main);
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .icon-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 42px;
+        height: 42px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .icon-button:hover,
+      .pill-button:hover,
+      .search:hover,
+      .conversation:hover,
+      .workspace-card:hover {
+        background: rgba(255, 255, 255, 0.075);
+      }
+
+      .search {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: var(--bg-input);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        color: var(--text-muted);
+        font-size: 15px;
+      }
+
+      .sidebar-nav {
+        display: grid;
+        gap: 8px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        color: var(--text-main);
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      .nav-item.dim {
+        color: var(--text-secondary);
+      }
+
+      .section-label {
+        padding: 8px 8px 0;
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .status-card {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.045);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #4ade80;
+        box-shadow: 0 0 0 4px rgba(74, 222, 128, 0.12);
+      }
+
+      .status-copy {
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .disclosure {
+        display: grid;
+        gap: 10px;
+      }
+
+      .disclosure-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        color: var(--text-main);
+        font-size: 14px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .disclosure-count {
+        min-width: 22px;
+        height: 22px;
+        padding: 0 7px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.07);
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+
+      .disclosure-panel {
+        display: grid;
+        gap: 10px;
+        padding: 0 2px;
+      }
+
+      .inline-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .mini-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 32px;
+        padding: 0 10px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        color: var(--text-main);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .mini-button.secondary {
+        color: var(--text-secondary);
+      }
+
+      .mini-button.danger {
+        color: #ffb4b4;
+        border-color: rgba(255, 120, 120, 0.15);
+        background: rgba(255, 120, 120, 0.08);
+      }
+
+      .entity-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .entity-card {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid rgba(255, 255, 255, 0.045);
+      }
+
+      .entity-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .entity-title {
+        font-size: 14px;
+        font-weight: 650;
+      }
+
+      .entity-main {
+        color: var(--accent);
+        font-size: 13px;
+      }
+
+      .entity-meta,
+      .entity-copy {
+        color: var(--text-secondary);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 44px;
+        height: 22px;
+        padding: 0 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .badge.success {
+        color: #9ef0b7;
+        background: rgba(74, 222, 128, 0.12);
+      }
+
+      .badge.muted {
+        color: var(--text-muted);
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .sidebar-scroll {
+        display: grid;
+        gap: 14px;
+        overflow: auto;
+        min-height: 0;
+        padding-right: 4px;
+      }
+
+      .conversation-list {
+        display: grid;
+        gap: 4px;
+      }
+
+      .conversation {
+        display: grid;
+        gap: 5px;
+        padding: 12px 12px;
+        border-radius: 14px;
+        color: var(--text-secondary);
+        transition: background 160ms ease, color 160ms ease;
+      }
+
+      .conversation.active {
+        background: var(--bg-card-strong);
+        color: var(--text-main);
+      }
+
+      .conversation-title {
+        font-size: 14px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .conversation-meta {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      .sidebar-footer {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(180deg, #7b8cff, #6a5ce5);
+        font-weight: 700;
+      }
+
+      .content {
+        position: relative;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-width: 0;
+        min-height: 0;
+        height: 100%;
+        overflow: hidden;
+        border-radius: 24px;
+        background:
+          radial-gradient(circle at top center, rgba(255, 255, 255, 0.03), transparent 28%),
+          rgba(255, 255, 255, 0.01);
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 6px 8px;
+      }
+
+      .topbar-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .floating-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .pill-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 44px;
+        padding: 0 16px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .shell.sidebar-collapsed .sidebar-anchor {
+        opacity: 1;
+        transform: translateX(0);
+        pointer-events: auto;
+      }
+
+      .sidebar-anchor {
+        opacity: 0;
+        transform: translateX(-8px);
+        pointer-events: none;
+        transition: opacity 180ms ease, transform 180ms ease;
+      }
+
+      .thread {
+        min-height: 0;
+        overflow: auto;
+        padding: 24px 0 24px;
+      }
+
+      .thread-inner {
+        width: min(980px, calc(100% - 48px));
+        margin: 0 auto;
+        display: grid;
+        gap: 26px;
+      }
+
+      .message-row {
+        display: flex;
+      }
+
+      .message-row.assistant {
+        justify-content: flex-start;
+      }
+
+      .message-row.user {
+        justify-content: flex-end;
+      }
+
+      .assistant-block {
+        max-width: 700px;
+      }
+
+      .assistant-title {
+        font-size: 34px;
+        line-height: 1.16;
+        font-weight: 650;
+        margin-bottom: 16px;
+        letter-spacing: -0.03em;
+      }
+
+      .assistant-copy {
+        color: var(--text-secondary);
+        font-size: 16px;
+        line-height: 1.7;
+      }
+
+      .assistant-copy p {
+        margin: 0 0 14px;
+      }
+
+      .assistant-copy p:last-child {
+        margin-bottom: 0;
+      }
+
+      .user-bubble {
+        max-width: 480px;
+        padding: 14px 18px;
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--text-main);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .resource-tease {
+        margin-top: 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.045);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+
+      .composer-wrap {
+        padding: 0 20px 22px;
+      }
+
+      .composer {
+        width: min(980px, 100%);
+        margin: 0 auto;
+        padding: 16px 18px 14px;
+        border-radius: 26px;
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.03) inset;
+      }
+
+      .composer-input {
+        min-height: 72px;
+        color: var(--text-main);
+        font-size: 16px;
+      }
+
+      .composer-placeholder {
+        color: var(--text-muted);
+      }
+
+      .composer-bar {
+        margin-top: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .composer-tools,
+      .composer-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .tool {
+        width: 36px;
+        height: 36px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--text-secondary);
+      }
+
+      .tool.send {
+        background: rgba(255, 255, 255, 0.12);
+        color: var(--text-main);
+      }
+
+      .proto-note {
+        position: absolute;
+        right: 24px;
+        top: 22px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+
+      svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      @media (max-width: 1100px) {
+        body {
+          padding: 0;
+        }
+
+        .frame,
+        .shell {
+          min-height: 100vh;
+          border-radius: 0;
+        }
+
+        .shell {
+          padding: 12px;
+          gap: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <div class="proto-note">原型重点：侧边栏是会话导航，任务 / MCP 退到 workspace 面板</div>
+
+      <div class="shell" id="shell">
+        <aside class="sidebar" id="sidebar">
+          <div class="sidebar-topbar">
+            <div class="traffic">
+              <span class="dot red"></span>
+              <span class="dot yellow"></span>
+              <span class="dot green"></span>
+            </div>
+            <button class="icon-button" type="button" id="collapseSidebar" aria-label="收起侧边栏">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
+                <path d="M9 5v14"></path>
+              </svg>
+            </button>
+            <button class="icon-button" type="button" aria-label="新建会话">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M12 5v14M5 12h14"></path>
+              </svg>
+            </button>
+          </div>
+
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="11" cy="11" r="6"></circle>
+              <path d="m20 20-3.5-3.5"></path>
+            </svg>
+            搜索 task / skill / MCP
+          </div>
+
+          <div class="sidebar-scroll">
+            <div class="section-label">当前远端</div>
+            <div class="status-card">
+              <div class="status-row">
+                <span class="status-dot"></span>
+                <span>已连接到 127.0.0.1:8765</span>
+              </div>
+              <div class="status-copy">workspace: nomi-local / session: desktop:12af3c / owner ready</div>
+              <div class="status-copy">这个侧边栏继续保留管理能力，只是外形和布局关系改成悬浮式。</div>
+            </div>
+
+            <div class="section-label">资源管理</div>
+
+            <section class="disclosure">
+              <button class="disclosure-toggle" type="button">
+                <span>定时任务</span>
+                <span class="disclosure-count">3</span>
+              </button>
+              <div class="disclosure-panel">
+                <div class="inline-actions">
+                  <button class="mini-button">新建任务</button>
+                  <button class="mini-button secondary">刷新</button>
+                </div>
+                <div class="entity-list">
+                  <article class="entity-card">
+                    <div class="entity-head">
+                      <div class="entity-title">明早提醒检查图标导出</div>
+                      <span class="badge success">启用</span>
+                    </div>
+                    <div class="entity-main">下次执行 · 05/09 09:00</div>
+                    <div class="entity-meta">一次性任务 · at · Asia/Shanghai</div>
+                    <div class="entity-copy">提醒我检查 SVG / PNG / ICNS 的打包效果，并确认 Dock 图标显示。</div>
+                  </article>
+                  <article class="entity-card">
+                    <div class="entity-head">
+                      <div class="entity-title">每 6 小时同步 remote 状态</div>
+                      <span class="badge success">启用</span>
+                    </div>
+                    <div class="entity-main">下次执行 · 05/09 00:00</div>
+                    <div class="entity-meta">循环间隔 · every 21600 秒</div>
+                  </article>
+                </div>
+              </div>
+            </section>
+
+            <section class="disclosure">
+              <button class="disclosure-toggle" type="button">
+                <span>已安装 Skills</span>
+                <span class="disclosure-count">2</span>
+              </button>
+              <div class="disclosure-panel">
+                <div class="inline-actions">
+                  <button class="mini-button">安装 Skill</button>
+                </div>
+                <div class="entity-list">
+                  <article class="entity-card">
+                    <div class="entity-head">
+                      <div class="entity-title">imagegen</div>
+                    </div>
+                    <div class="entity-meta">位于 .codex/skills/.system/imagegen</div>
+                    <div class="inline-actions">
+                      <button class="mini-button danger">卸载</button>
+                    </div>
+                  </article>
+                  <article class="entity-card">
+                    <div class="entity-head">
+                      <div class="entity-title">browser-use</div>
+                    </div>
+                    <div class="entity-meta">位于 plugins/browser-use/skills/browser</div>
+                    <div class="inline-actions">
+                      <button class="mini-button danger">卸载</button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </section>
+
+            <section class="disclosure">
+              <button class="disclosure-toggle" type="button">
+                <span>MCP</span>
+                <span class="disclosure-count">2</span>
+              </button>
+              <div class="disclosure-panel">
+                <div class="inline-actions">
+                  <button class="mini-button">新建 MCP</button>
+                </div>
+                <div class="entity-list">
+                  <article class="entity-card">
+                    <div class="entity-head">
+                      <div class="entity-title">figma</div>
+                      <span class="badge success">启用</span>
+                    </div>
+                    <div class="entity-meta">3 个 tools · 本地 stdio</div>
+                    <div class="inline-actions">
+                      <button class="mini-button secondary">编辑</button>
+                      <button class="mini-button secondary">停用</button>
+                      <button class="mini-button danger">删除</button>
+                    </div>
+                  </article>
+                  <article class="entity-card">
+                    <div class="entity-head">
+                      <div class="entity-title">docs</div>
+                      <span class="badge muted">停用</span>
+                    </div>
+                    <div class="entity-meta">未连接 · https://docs.example/mcp</div>
+                    <div class="inline-actions">
+                      <button class="mini-button secondary">编辑</button>
+                      <button class="mini-button secondary">启用</button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </section>
+
+            <div class="section-label">高级设置</div>
+            <div class="entity-list">
+              <article class="entity-card">
+                <div class="entity-title">固定桌面会话</div>
+                <div class="entity-meta">desktop:12af3c3d1e</div>
+              </article>
+              <article class="entity-card">
+                <div class="entity-title">连接配置</div>
+                <div class="entity-meta">Host: 127.0.0.1 / Port: 8765 / Token: 已保存</div>
+              </article>
+              <article class="entity-card">
+                <div class="inline-actions">
+                  <button class="mini-button">连接 remote</button>
+                  <button class="mini-button secondary">断开</button>
+                  <button class="mini-button secondary">新建 session</button>
+                  <button class="mini-button danger">清空远端运行态</button>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <div class="sidebar-footer">
+            <div class="avatar">昂</div>
+            <div>
+              <div style="font-weight: 650">昂 星团</div>
+              <div style="color: var(--text-muted); font-size: 13px">Desktop workspace owner</div>
+            </div>
+          </div>
+        </aside>
+
+        <main class="content">
+          <header class="topbar">
+            <div class="topbar-left">
+              <div class="floating-toggle">
+                <button class="icon-button sidebar-anchor" type="button" id="expandSidebar" aria-label="展开侧边栏">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
+                    <path d="M9 5v14"></path>
+                  </svg>
+                </button>
+                <button class="pill-button" type="button">
+                  Nomi Desktop
+                  <span style="color: var(--text-muted)">›</span>
+                </button>
+              </div>
+            </div>
+            <div class="composer-actions">
+              <button class="icon-button" type="button" aria-label="分享">⤴</button>
+              <button class="icon-button" type="button" aria-label="新窗口">⧉</button>
+            </div>
+          </header>
+
+          <section class="thread">
+            <div class="thread-inner">
+              <div class="message-row assistant">
+                <div class="assistant-block">
+                  <div class="assistant-title">这里的主视觉应该始终属于聊天区。</div>
+                  <div class="assistant-copy">
+                    <p>这版原型保留了你现在的 sidebar 业务内容：task、skill、MCP、高级设置都还在。</p>
+                    <p>变化只在结构关系上：它现在变成一个可收起、带圆角、悬浮在聊天区旁边的侧边栏。</p>
+                    <p>也就是说，不是改业务信息架构，而是改视觉层级和空间关系，让聊天区更像主舞台。</p>
+                  </div>
+                  <div class="resource-tease">内容不变，关系变成悬浮式 sidebar + 主聊天区</div>
+                </div>
+              </div>
+
+              <div class="message-row user">
+                <div class="user-bubble">对，就是这种关系。左边是历史和导航，右边永远是当前聊天主区域。</div>
+              </div>
+
+              <div class="message-row assistant">
+                <div class="assistant-block">
+                  <div class="assistant-copy">
+                    <p>如果后面要落回 React/Tauri，我会把当前 `resource sidebar` 改成 `conversation sidebar`，再把现有任务 / Skills / MCP 下沉到次级入口。</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <footer class="composer-wrap">
+            <div class="composer">
+              <div class="composer-input">
+                <span class="composer-placeholder">有问题，尽管问</span>
+              </div>
+              <div class="composer-bar">
+                <div class="composer-tools">
+                  <div class="tool">＋</div>
+                  <div class="tool">◎</div>
+                  <div class="tool">⌘</div>
+                </div>
+                <div class="composer-actions">
+                  <div class="tool">🎙</div>
+                  <div class="tool send">↑</div>
+                </div>
+              </div>
+            </div>
+          </footer>
+        </main>
+      </div>
+    </div>
+
+    <script>
+      const shell = document.getElementById("shell");
+      document.getElementById("collapseSidebar").addEventListener("click", () => {
+        shell.classList.add("sidebar-collapsed");
+      });
+
+      document.getElementById("expandSidebar").addEventListener("click", () => {
+        shell.classList.remove("sidebar-collapsed");
+      });
+    </script>
+  </body>
+</html>

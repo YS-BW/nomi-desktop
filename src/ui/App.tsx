@@ -166,9 +166,19 @@ export function App() {
       matchesCurrentSession &&
       latestEvent.type === "resource_action_result" &&
       latestEvent.ok &&
-      latestEvent.action === "clear_remote_runtime"
+      latestEvent.action
     ) {
-      fetchBoundSessionState(state.currentSessionId);
+      if (
+        latestEvent.action.startsWith("skill_") ||
+        latestEvent.action.startsWith("mcp_") ||
+        latestEvent.action.startsWith("task_") ||
+        latestEvent.action === "clear_remote_runtime"
+      ) {
+        void refreshSidebarData();
+      }
+      if (latestEvent.action === "clear_remote_runtime") {
+        fetchBoundSessionState(state.currentSessionId);
+      }
     }
   }, [state.currentSessionId, state.eventLog]);
 

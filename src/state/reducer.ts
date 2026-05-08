@@ -116,23 +116,76 @@ function appendEventLog(state: DesktopAppState, event: RemoteEvent): void {
   state.eventLog = [event, ...state.eventLog].slice(0, 30);
 }
 
+function isMessageKind(value: unknown): value is MessageItem["kind"] {
+  return (
+    value === "user" ||
+    value === "assistant" ||
+    value === "progress" ||
+    value === "task" ||
+    value === "system"
+  );
+}
+
+function isMessageStatus(value: unknown): value is MessageItem["status"] {
+  return (
+    value === "history" ||
+    value === "sent" ||
+    value === "streaming" ||
+    value === "completed" ||
+    value === "interrupted" ||
+    value === "task_delivered" ||
+    value === "error"
+  );
+}
+
+function normalizeHistoryMessage(
+  message: Record<string, unknown>,
+  sessionId: string,
+): MessageItem {
+  const rawRole = typeof message.role === "string" ? message.role : "";
+  const toolHint = message.tool_hint === true;
+  let kind: MessageItem["kind"] = "system";
+
+  if (isMessageKind(message.kind)) {
+    kind = message.kind;
+  } else if (rawRole === "assistant") {
+    kind = "assistant";
+  } else if (rawRole === "user") {
+    kind = "user";
+  } else if (rawRole === "task") {
+    kind = "task";
+  } else if (rawRole === "progress" || rawRole === "tool_hint" || toolHint) {
+    kind = "progress";
+  }
+
+  const role =
+    kind === "progress" && (rawRole === "tool_hint" || toolHint)
+      ? "tool_hint"
+      : rawRole || kind;
+
+  return {
+    id:
+      typeof message.id === "string" && message.id.trim().length > 0
+        ? message.id
+        : createMessageId(role || "history"),
+    kind,
+    role,
+    content: String(message.content || ""),
+    sessionId:
+      typeof message.session_id === "string" && message.session_id.trim().length > 0
+        ? message.session_id
+        : sessionId,
+    status: isMessageStatus(message.status) ? message.status : "history",
+  };
+}
+
 function replaceHistory(
   sessionState: DesktopSessionState,
   messages: Array<Record<string, unknown>>,
 ): void {
-  sessionState.messages = messages.map((message) => ({
-    id: createMessageId(String(message.role || "history")),
-    kind:
-      message.role === "assistant"
-        ? "assistant"
-        : message.role === "user"
-          ? "user"
-          : "system",
-    role: String(message.role || "unknown"),
-    content: String(message.content || ""),
-    sessionId: sessionState.sessionId,
-    status: "history",
-  }));
+  sessionState.messages = messages.map((message) =>
+    normalizeHistoryMessage(message, sessionState.sessionId),
+  );
   sessionState.activeTurn = null;
 }
 

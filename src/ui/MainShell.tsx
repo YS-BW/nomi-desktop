@@ -21,8 +21,6 @@ import {
   getComposerHint,
   getConnectionDetailLabel,
   getConnectionLabel,
-  getConversationSummary,
-  getHeaderSessionLabel,
   getMessagePresentation,
   getWorkspaceSummary,
 } from "./presentation";
@@ -405,7 +403,6 @@ export function MainShell(props: MainShellProps) {
   const { state, actions, draftInput, composerPhase, sidebarCollapsed, toggleSidebar, updateProfile } = props;
   const connectionLabel = getConnectionLabel(state);
   const connectionDetailLabel = getConnectionDetailLabel(state);
-  const conversationSummary = getConversationSummary(state);
   const workspaceSummary = getWorkspaceSummary(state);
   const composerHint = getComposerHint(state);
   const taskGroups = buildTaskGroups(state.sidebar.tasks);
@@ -1032,8 +1029,6 @@ export function MainShell(props: MainShellProps) {
                 <div className="chat-header-title">Nomi</div>
                 <span className={`chat-header-pill ${state.connectionStatus}`}>{connectionLabel}</span>
               </div>
-              <div className="chat-header-subtitle">{conversationSummary}</div>
-              <div className="chat-header-meta">{getHeaderSessionLabel(state.currentSessionId)}</div>
             </div>
           </div>
         </header>
@@ -1118,36 +1113,26 @@ export function MainShell(props: MainShellProps) {
         <footer className="chat-composer-shell">
           {state.errorText ? <div className="composer-error">{state.errorText}</div> : null}
           <div className="chat-composer">
-            <textarea
-              ref={composerRef}
-              className="composer-input"
-              aria-label="消息输入"
-              value={draftInput}
-              onChange={(event) => actions.setDraftInput(event.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              placeholder={composerHint || "Message Nomi"}
-              rows={1}
-            />
-            <div className="composer-toolbar">
-              <div className="composer-toolbar-status">
-                <span className={`composer-status-pill ${state.connectionStatus}`}>
-                  {connectionLabel}
-                </span>
-                <span className={`composer-phase-pill ${composerPhase !== "idle" ? "active" : ""}`}>
-                  {composerStatusCopy}
-                </span>
-              </div>
-              <div className="composer-toolbar-right">
-                <button
-                  className="send-button"
-                  type="button"
-                  onClick={() => void actions.sendMainMessage()}
-                  aria-label="发送消息"
-                  disabled={sendDisabled}
-                >
-                  <Icon name="arrow-up" className="is-light" />
-                </button>
-              </div>
+            <div className="composer-row">
+              <textarea
+                ref={composerRef}
+                className="composer-input"
+                aria-label="消息输入"
+                value={draftInput}
+                onChange={(event) => actions.setDraftInput(event.target.value)}
+                onKeyDown={handleComposerKeyDown}
+                placeholder={composerHint || "Message Nomi"}
+                rows={1}
+              />
+              <button
+                className="send-button"
+                type="button"
+                onClick={() => void actions.sendMainMessage()}
+                aria-label="发送消息"
+                disabled={sendDisabled}
+              >
+                <Icon name="arrow-up" className="is-light" />
+              </button>
             </div>
           </div>
         </footer>
