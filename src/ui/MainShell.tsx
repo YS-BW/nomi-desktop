@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
@@ -15,6 +16,7 @@ import type {
   SidebarTaskItem,
   ThemePreference,
 } from "../lib/types";
+import type { DesktopRemoteEntry } from "../lib/store";
 import type { DesktopAppState } from "../state/reducer";
 import {
   buildThreadDisplayItems,
@@ -33,6 +35,19 @@ interface MainShellProps {
   draftInput: string;
   composerPhase: "idle" | "interrupting" | "sending";
   sidebarCollapsed: boolean;
+  previewThemePreference: ThemePreference | null;
+  setPreviewThemePreference(value: ThemePreference | null): void;
+  remoteEntries: DesktopRemoteEntry[];
+  activeRemoteId: string;
+  selectRemote(remoteId: string): void;
+  saveRemote(input: {
+    id?: string;
+    name: string;
+    host: string;
+    port: string;
+    token: string;
+  }): void;
+  deleteRemote(remoteId: string): void;
   toggleSidebar(): void;
   updateProfile(patch: Partial<ConnectionProfile>): void;
 }
@@ -83,6 +98,15 @@ interface McpFormState {
   headers: string;
 }
 
+interface RemoteFormState {
+  mode: "create" | "edit";
+  remoteId: string | null;
+  name: string;
+  host: string;
+  port: string;
+  token: string;
+}
+
 function Icon(props: { name: string; className?: string }) {
   const { name, className } = props;
   const common = {
@@ -128,6 +152,13 @@ function Icon(props: { name: string; className?: string }) {
     "chevron-down": (
       <>
         <path d="m6 9 6 6 6-6" {...common} />
+      </>
+    ),
+    "more-horizontal": (
+      <>
+        <circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none" />
       </>
     ),
   };
@@ -381,26 +412,34 @@ function buildMcpFormState(item?: SidebarMcpItem): McpFormState {
   };
 }
 
-function ThemeModeButton(props: {
-  active: boolean;
-  label: string;
-  onClick(): void;
-}) {
-  const { active, label, onClick } = props;
-  return (
-    <button
-      type="button"
-      className={`theme-mode-button${active ? " active" : ""}`}
-      aria-pressed={active}
-      onClick={onClick}
-    >
-      {label}
-    </button>
-  );
+function buildRemoteFormState(entry?: DesktopRemoteEntry): RemoteFormState {
+  return {
+    mode: entry ? "edit" : "create",
+    remoteId: entry?.id || null,
+    name: entry?.name || "",
+    host: entry?.profile.host || "127.0.0.1",
+    port: entry?.profile.port || "8765",
+    token: entry?.profile.token || "",
+  };
 }
 
 export function MainShell(props: MainShellProps) {
-  const { state, actions, draftInput, composerPhase, sidebarCollapsed, toggleSidebar, updateProfile } = props;
+  const {
+    state,
+    actions,
+    draftInput,
+    composerPhase,
+    sidebarCollapsed,
+    previewThemePreference,
+    setPreviewThemePreference,
+    remoteEntries,
+    activeRemoteId,
+    selectRemote,
+    saveRemote,
+    deleteRemote,
+    toggleSidebar,
+    updateProfile,
+  } = props;
   const connectionLabel = getConnectionLabel(state);
   const connectionDetailLabel = getConnectionDetailLabel(state);
   const workspaceSummary = getWorkspaceSummary(state);
@@ -419,9 +458,16 @@ export function MainShell(props: MainShellProps) {
     file: null,
     error: null,
   });
+  const [remoteModal, setRemoteModal] = useState<RemoteFormState | null>(null);
+  const [remoteFormError, setRemoteFormError] = useState<string | null>(null);
   const [mcpModal, setMcpModal] = useState<McpFormState | null>(null);
   const [mcpFormError, setMcpFormError] = useState<string | null>(null);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const [themeSliderDragValue, setThemeSliderDragValue] = useState<number | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null);
+  const themeSliderRef = useRef<HTMLDivElement | null>(null);
+  const themeSliderDragValueRef = useRef<number | null>(null);
   const composerStatusCopy = getComposerStatusCopy(state, composerPhase);
   const sendDisabled = draftInput.trim().length === 0 || !state.ownerReady || composerPhase !== "idle";
   const resourceActionsDisabled =
@@ -436,6 +482,25 @@ export function MainShell(props: MainShellProps) {
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
   }, [draftInput]);
+
+  useEffect(() => {
+    if (!settingsMenuOpen) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!settingsMenuRef.current?.contains(event.target as Node)) {
+        setSettingsMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [settingsMenuOpen]);
+
+  useEffect(() => {
+    themeSliderDragValueRef.current = themeSliderDragValue;
+  }, [themeSliderDragValue]);
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) {
@@ -457,8 +522,80 @@ export function MainShell(props: MainShellProps) {
   }
 
   function updateThemePreference(themePreference: ThemePreference) {
+    setPreviewThemePreference(null);
     updateProfile({ themePreference });
   }
+
+  function getThemeSliderValue(): number {
+    const preference = previewThemePreference ?? state.profile.themePreference;
+    if (preference === "light") {
+      return 0;
+    }
+    if (preference === "dark") {
+      return 2;
+    }
+    return 1;
+  }
+
+  function getThemePreferenceFromValue(value: number): ThemePreference {
+    if (value < 0.5) {
+      return "light";
+    }
+    if (value > 1.5) {
+      return "dark";
+    }
+    return "system";
+  }
+
+  function readThemeSliderValue(clientX: number): number {
+    const rect = themeSliderRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) {
+      return getThemeSliderValue();
+    }
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return ratio * 2;
+  }
+
+  function handleThemeSliderPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const nextValue = readThemeSliderValue(event.clientX);
+    themeSliderDragValueRef.current = nextValue;
+    setThemeSliderDragValue(nextValue);
+    setPreviewThemePreference(getThemePreferenceFromValue(nextValue));
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleThemeSliderPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+    const nextValue = readThemeSliderValue(event.clientX);
+    themeSliderDragValueRef.current = nextValue;
+    setThemeSliderDragValue(nextValue);
+    setPreviewThemePreference(getThemePreferenceFromValue(nextValue));
+  }
+
+  function handleThemeSliderPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const nextValue = themeSliderDragValueRef.current ?? getThemeSliderValue();
+    themeSliderDragValueRef.current = null;
+    setThemeSliderDragValue(null);
+    updateThemePreference(getThemePreferenceFromValue(nextValue));
+  }
+
+  function handleThemeSliderPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    themeSliderDragValueRef.current = null;
+    setThemeSliderDragValue(null);
+    setPreviewThemePreference(null);
+  }
+
+  const themeSliderDisplayValue = themeSliderDragValue ?? getThemeSliderValue();
+  const themeSliderRatio = themeSliderDisplayValue / 2;
 
   function openCreateTaskModal() {
     setTaskFormError(null);
@@ -480,9 +617,41 @@ export function MainShell(props: MainShellProps) {
     setMcpModal(buildMcpFormState());
   }
 
+  function openCreateRemoteModal() {
+    setRemoteFormError(null);
+    setRemoteModal(buildRemoteFormState());
+  }
+
+  function openEditRemoteModal(entry: DesktopRemoteEntry) {
+    setRemoteFormError(null);
+    setRemoteModal(buildRemoteFormState(entry));
+  }
+
   function openEditMcpModal(item: SidebarMcpItem) {
     setMcpFormError(null);
     setMcpModal(buildMcpFormState(item));
+  }
+
+  function submitRemoteModal() {
+    if (!remoteModal) {
+      return;
+    }
+    if (!remoteModal.name.trim()) {
+      setRemoteFormError("远端名称不能为空。");
+      return;
+    }
+    if (!remoteModal.host.trim() || !remoteModal.port.trim()) {
+      setRemoteFormError("Host 和 Port 不能为空。");
+      return;
+    }
+    saveRemote({
+      id: remoteModal.remoteId || undefined,
+      name: remoteModal.name.trim(),
+      host: remoteModal.host.trim(),
+      port: remoteModal.port.trim(),
+      token: remoteModal.token,
+    });
+    setRemoteModal(null);
   }
 
   async function submitTaskModal() {
@@ -748,6 +917,71 @@ export function MainShell(props: MainShellProps) {
         </section>
 
         <section className="sidebar-section">
+          <SidebarDisclosure title="远端" count={remoteEntries.length}>
+            <div className="sidebar-section-actions">
+              <button
+                type="button"
+                className="sidebar-inline-button"
+                onClick={openCreateRemoteModal}
+              >
+                新建远端
+              </button>
+            </div>
+            <div className="sidebar-entity-list">
+              {remoteEntries.map((entry) => {
+                const isActive = entry.id === activeRemoteId;
+                return (
+                  <article key={entry.id} className="sidebar-entity-card compact">
+                    <div className="sidebar-entity-title-row">
+                      <div className="sidebar-entity-title">{entry.name}</div>
+                      <span className={`sidebar-badge ${isActive ? "success" : "muted"}`}>
+                        {isActive ? "当前" : "待命"}
+                      </span>
+                    </div>
+                    <div className="sidebar-entity-primary">
+                      {entry.profile.host}:{entry.profile.port}
+                    </div>
+                    <div className="sidebar-entity-meta">
+                      {entry.profile.token ? "已配置 token" : "未配置 token"}
+                    </div>
+                    <div className="sidebar-card-actions">
+                      <button
+                        type="button"
+                        className="sidebar-inline-button secondary"
+                        onClick={() => selectRemote(entry.id)}
+                        disabled={isActive}
+                      >
+                        {isActive ? "当前远端" : "切换"}
+                      </button>
+                      <button
+                        type="button"
+                        className="sidebar-inline-button secondary"
+                        onClick={() => openEditRemoteModal(entry)}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="sidebar-inline-button danger"
+                        onClick={() => {
+                          if (!window.confirm(`确认删除远端“${entry.name}”吗？`)) {
+                            return;
+                          }
+                          deleteRemote(entry.id);
+                        }}
+                        disabled={remoteEntries.length <= 1}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </SidebarDisclosure>
+        </section>
+
+        <section className="sidebar-section">
           <SidebarDisclosure title="定时任务" count={state.sidebar.tasks.length}>
             <div className="sidebar-section-actions">
               <button
@@ -923,12 +1157,6 @@ export function MainShell(props: MainShellProps) {
           <summary>高级设置</summary>
           <div className="sidebar-debug-body">
             <div className="control-actions">
-              <button type="button" onClick={actions.connect} disabled={state.connectionStatus === "connecting" || state.ownerReady}>
-                连接 remote
-              </button>
-              <button className="secondary" type="button" onClick={actions.disconnect}>
-                断开连接
-              </button>
               <button className="secondary" type="button" onClick={() => void actions.createNewSession()}>
                 新建 session
               </button>
@@ -945,54 +1173,6 @@ export function MainShell(props: MainShellProps) {
               >
                 清空远端运行态
               </button>
-            </div>
-            <div className="sidebar-meta-block">
-              <div className="sidebar-meta-label">固定桌面会话</div>
-              <div className="sidebar-meta-value">{state.profile.defaultSessionId}</div>
-            </div>
-            <div className="sidebar-meta-block">
-              <div className="sidebar-meta-label">主题模式</div>
-              <div className="theme-mode-group" role="group" aria-label="主题模式">
-                <ThemeModeButton
-                  active={state.profile.themePreference === "system"}
-                  label="跟随系统"
-                  onClick={() => updateThemePreference("system")}
-                />
-                <ThemeModeButton
-                  active={state.profile.themePreference === "light"}
-                  label="浅色"
-                  onClick={() => updateThemePreference("light")}
-                />
-                <ThemeModeButton
-                  active={state.profile.themePreference === "dark"}
-                  label="深色"
-                  onClick={() => updateThemePreference("dark")}
-                />
-              </div>
-            </div>
-            <div className="config-grid">
-              <label>
-                Host
-                <input
-                  value={state.profile.host}
-                  onChange={(event) => updateProfile({ host: event.target.value })}
-                />
-              </label>
-              <label>
-                Port
-                <input
-                  value={state.profile.port}
-                  onChange={(event) => updateProfile({ port: event.target.value })}
-                />
-              </label>
-              <label>
-                Token
-                <input
-                  type="password"
-                  value={state.profile.token}
-                  onChange={(event) => updateProfile({ token: event.target.value })}
-                />
-              </label>
             </div>
             <section className="debug-panel">
               <h2>状态快照</h2>
@@ -1028,6 +1208,50 @@ export function MainShell(props: MainShellProps) {
               <div className="chat-header-row">
                 <div className="chat-header-title">Nomi</div>
                 <span className={`chat-header-pill ${state.connectionStatus}`}>{connectionLabel}</span>
+              </div>
+            </div>
+          </div>
+          <div className="chat-header-actions" ref={settingsMenuRef}>
+            <div className="chat-header-actions-shell">
+              <button
+                className={`header-icon-button settings-trigger${settingsMenuOpen ? " active" : ""}`}
+                type="button"
+                aria-label="打开设置菜单"
+                aria-expanded={settingsMenuOpen}
+                onClick={() => setSettingsMenuOpen((current) => !current)}
+              >
+                <Icon name="more-horizontal" />
+              </button>
+            </div>
+            <div className={`settings-prototype-popover${settingsMenuOpen ? " open" : ""}`}>
+              <div className="settings-prototype-title">设置</div>
+              <div className="settings-prototype-body">
+                <div className="settings-slider-block">
+                  <div className="settings-slider-labels">
+                    <span>浅色</span>
+                    <span>跟随系统</span>
+                    <span>深色</span>
+                  </div>
+                  <div
+                    ref={themeSliderRef}
+                    className="settings-theme-slider"
+                    role="slider"
+                    aria-label="主题模式"
+                    aria-valuemin={0}
+                    aria-valuemax={2}
+                    aria-valuenow={Math.round(themeSliderDisplayValue)}
+                    onPointerDown={handleThemeSliderPointerDown}
+                    onPointerMove={handleThemeSliderPointerMove}
+                    onPointerUp={handleThemeSliderPointerUp}
+                    onPointerCancel={handleThemeSliderPointerCancel}
+                  >
+                    <div className="settings-theme-slider-track" />
+                    <div
+                      className="settings-theme-slider-thumb"
+                      style={{ left: `calc(18px + ${themeSliderRatio} * (100% - 36px))` }}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1409,6 +1633,63 @@ export function MainShell(props: MainShellProps) {
               </button>
               <button type="button" onClick={() => void submitMcpModal()}>
                 {mcpModal.mode === "create" ? "安装" : "保存"}
+              </button>
+            </div>
+          </div>
+        </ActionModal>
+      ) : null}
+
+      {remoteModal ? (
+        <ActionModal
+          title={remoteModal.mode === "create" ? "新建远端" : `编辑远端 · ${remoteModal.name}`}
+          onClose={() => setRemoteModal(null)}
+        >
+          <div className="overlay-form">
+            <label>
+              名称
+              <input
+                value={remoteModal.name}
+                onChange={(event) =>
+                  setRemoteModal((current) => (current ? { ...current, name: event.target.value } : current))
+                }
+                placeholder="例如：本地开发 / 线上测试"
+              />
+            </label>
+            <label>
+              Host
+              <input
+                value={remoteModal.host}
+                onChange={(event) =>
+                  setRemoteModal((current) => (current ? { ...current, host: event.target.value } : current))
+                }
+              />
+            </label>
+            <label>
+              Port
+              <input
+                value={remoteModal.port}
+                onChange={(event) =>
+                  setRemoteModal((current) => (current ? { ...current, port: event.target.value } : current))
+                }
+              />
+            </label>
+            <label>
+              Token
+              <input
+                type="password"
+                value={remoteModal.token}
+                onChange={(event) =>
+                  setRemoteModal((current) => (current ? { ...current, token: event.target.value } : current))
+                }
+              />
+            </label>
+            {remoteFormError ? <div className="overlay-error">{remoteFormError}</div> : null}
+            <div className="overlay-actions">
+              <button type="button" className="secondary" onClick={() => setRemoteModal(null)}>
+                取消
+              </button>
+              <button type="button" onClick={submitRemoteModal}>
+                保存
               </button>
             </div>
           </div>

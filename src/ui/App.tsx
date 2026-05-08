@@ -2,10 +2,14 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import {
   applyRemoteDefaults,
+  deleteRemoteEntry,
+  loadRemoteCatalog,
   loadDesktopSidebarData,
-  loadProfile,
   saveProfile,
+  saveRemoteCatalog,
+  upsertRemoteEntry,
   uploadRemoteSkillZip,
+  type DesktopRemoteCatalog,
 } from "../lib/store";
 import type {
   ConnectionProfile,
@@ -14,7 +18,7 @@ import type {
   RemoteCommand,
   ThemePreference,
 } from "../lib/types";
-import { createDesktopSessionId } from "../lib/ids";
+import { createDesktopSessionId, createStableClientId } from "../lib/ids";
 import { createInitialDesktopState, desktopReducer } from "../state/reducer";
 import { RemoteClient } from "../transport/remoteClient";
 import { MainShell } from "./MainShell";
@@ -101,18 +105,23 @@ function getCommandBlockMessage(state: ReturnType<typeof createInitialDesktopSta
 }
 
 export function App() {
-  const initialProfile = useMemo(() => loadProfile(), []);
+  const initialRemoteCatalog = useMemo(() => loadRemoteCatalog(), []);
+  const initialProfile =
+    initialRemoteCatalog.remotes.find((entry) => entry.id === initialRemoteCatalog.activeRemoteId)?.profile ||
+    initialRemoteCatalog.remotes[0].profile;
   const [state, dispatch] = useReducer(
     desktopReducer,
     initialProfile,
     createInitialDesktopState,
   );
+  const [remoteCatalog, setRemoteCatalog] = useState<DesktopRemoteCatalog>(initialRemoteCatalog);
   const [draftInput, setDraftInput] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [composerPhase, setComposerPhase] = useState<"idle" | "interrupting" | "sending">("idle");
+  const [previewThemePreference, setPreviewThemePreference] = useState<ThemePreference | null>(null);
   const clientRef = useRef(new RemoteClient());
   const autoConnectDoneRef = useRef(false);
-  const resolvedTheme = useResolvedTheme(state.profile.themePreference);
+  const resolvedTheme = useResolvedTheme(previewThemePreference ?? state.profile.themePreference);
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
@@ -130,6 +139,7 @@ export function App() {
         return;
       }
       saveProfile(nextProfile);
+      setRemoteCatalog(loadRemoteCatalog());
       dispatch({ type: "profile/update", profile: nextProfile });
     });
   }, []);
@@ -192,13 +202,23 @@ export function App() {
     };
   }, [state.connectionStatus, state.currentSessionId]);
 
+  function persistRemoteCatalog(nextCatalog: DesktopRemoteCatalog) {
+    setRemoteCatalog(nextCatalog);
+    saveRemoteCatalog(nextCatalog);
+  }
+
   function updateProfile(patch: Partial<ConnectionProfile>) {
     const nextProfile = {
       ...state.profile,
       ...patch,
       lastBoundSessionId: state.profile.defaultSessionId,
     };
-    saveProfile(nextProfile);
+    persistRemoteCatalog(upsertRemoteEntry(remoteCatalog, {
+      id: remoteCatalog.activeRemoteId,
+      name:
+        remoteCatalog.remotes.find((entry) => entry.id === remoteCatalog.activeRemoteId)?.name || "远端",
+      profile: nextProfile,
+    }));
     dispatch({ type: "profile/update", profile: nextProfile });
   }
 
@@ -241,7 +261,7 @@ export function App() {
     }
   }
 
-  function connect() {
+  function connect(profileOverride: ConnectionProfile = state.profile) {
     autoConnectDoneRef.current = true;
     setComposerPhase("idle");
     dispatch({
@@ -252,7 +272,7 @@ export function App() {
       readyReceived: false,
       bindCompleted: false,
     });
-    void clientRef.current.connect(state.profile, {
+    void clientRef.current.connect(profileOverride, {
       onOpen: () => {},
       onClose: (error) => {
         dispatch({
@@ -277,7 +297,7 @@ export function App() {
       },
       onEvent: (event) => {
         if (event.type === "ready") {
-          const activeSessionId = state.profile.defaultSessionId;
+          const activeSessionId = profileOverride.defaultSessionId;
           dispatch({
             type: "connection/status",
             status: "connecting",
@@ -292,7 +312,7 @@ export function App() {
           });
         }
         if (event.type === "session_bound") {
-          const activeSessionId = event.session_id || state.profile.defaultSessionId;
+          const activeSessionId = event.session_id || profileOverride.defaultSessionId;
           void clientRef.current.send({
             type: "load_history",
             session_id: activeSessionId,
@@ -353,6 +373,7 @@ export function App() {
       lastBoundSessionId: nextSessionId,
     };
     saveProfile(nextProfile);
+    setRemoteCatalog(loadRemoteCatalog());
     dispatch({ type: "profile/update", profile: nextProfile });
     dispatch({ type: "session/current", sessionId: nextSessionId });
     dispatch({ type: "error/set", message: null });
@@ -439,6 +460,100 @@ export function App() {
     setDraftInput,
   };
 
+  async function selectRemote(remoteId: string) {
+    const target = remoteCatalog.remotes.find((entry) => entry.id === remoteId);
+    if (!target) {
+      return;
+    }
+    const nextCatalog = {
+      ...remoteCatalog,
+      activeRemoteId: remoteId,
+    };
+    persistRemoteCatalog(nextCatalog);
+    dispatch({ type: "profile/update", profile: target.profile });
+    dispatch({ type: "session/current", sessionId: target.profile.defaultSessionId });
+    dispatch({ type: "error/set", message: null });
+    if (hasConnectableProfile(target.profile)) {
+      await clientRef.current.disconnect();
+      connect(target.profile);
+    }
+  }
+
+  function saveRemoteEntryDraft(entry: {
+    id?: string;
+    name: string;
+    host: string;
+    port: string;
+    token: string;
+  }) {
+    const existing = entry.id
+      ? remoteCatalog.remotes.find((item) => item.id === entry.id)
+      : null;
+    const profile: ConnectionProfile = existing
+      ? {
+          ...existing.profile,
+          host: entry.host.trim(),
+          port: entry.port.trim(),
+          token: entry.token,
+        }
+      : {
+          host: entry.host.trim(),
+          port: entry.port.trim(),
+          token: entry.token,
+          clientId: createStableClientId(),
+          defaultSessionId: "",
+          lastBoundSessionId: "",
+          themePreference: state.profile.themePreference,
+        };
+    const nextProfile =
+      existing && existing.profile.clientId
+        ? profile
+        : {
+            ...profile,
+            clientId: profile.clientId || state.profile.clientId,
+            defaultSessionId: profile.defaultSessionId || `desktop:${profile.clientId || state.profile.clientId}`,
+            lastBoundSessionId:
+              profile.lastBoundSessionId ||
+              profile.defaultSessionId ||
+              `desktop:${profile.clientId || state.profile.clientId}`,
+          };
+    let nextCatalog = upsertRemoteEntry(remoteCatalog, {
+      id: entry.id,
+      name: entry.name,
+      profile: nextProfile,
+    });
+    if (existing && existing.id !== remoteCatalog.activeRemoteId) {
+      nextCatalog = {
+        ...nextCatalog,
+        activeRemoteId: remoteCatalog.activeRemoteId,
+      };
+    }
+    persistRemoteCatalog(nextCatalog);
+    const activatesRemote = !existing || existing.id === remoteCatalog.activeRemoteId;
+    if (activatesRemote) {
+      dispatch({ type: "profile/update", profile: nextProfile });
+      dispatch({ type: "session/current", sessionId: nextProfile.defaultSessionId });
+      if (hasConnectableProfile(nextProfile)) {
+        void clientRef.current.disconnect().then(() => {
+          connect(nextProfile);
+        });
+      }
+    }
+  }
+
+  async function deleteRemote(remoteId: string) {
+    const removedActive = remoteCatalog.activeRemoteId === remoteId;
+    const nextCatalog = deleteRemoteEntry(remoteCatalog, remoteId);
+    persistRemoteCatalog(nextCatalog);
+    const nextActive = nextCatalog.remotes.find((entry) => entry.id === nextCatalog.activeRemoteId)!;
+    dispatch({ type: "profile/update", profile: nextActive.profile });
+    dispatch({ type: "session/current", sessionId: nextActive.profile.defaultSessionId });
+    if (removedActive && hasConnectableProfile(nextActive.profile)) {
+      await clientRef.current.disconnect();
+      connect(nextActive.profile);
+    }
+  }
+
   return (
     <MainShell
       state={state}
@@ -448,6 +563,13 @@ export function App() {
       sidebarCollapsed={sidebarCollapsed}
       toggleSidebar={() => setSidebarCollapsed((current) => !current)}
       updateProfile={updateProfile}
+      previewThemePreference={previewThemePreference}
+      setPreviewThemePreference={setPreviewThemePreference}
+      remoteEntries={remoteCatalog.remotes}
+      activeRemoteId={remoteCatalog.activeRemoteId}
+      selectRemote={(remoteId) => void selectRemote(remoteId)}
+      saveRemote={saveRemoteEntryDraft}
+      deleteRemote={(remoteId) => void deleteRemote(remoteId)}
     />
   );
 }

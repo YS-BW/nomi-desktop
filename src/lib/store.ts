@@ -6,6 +6,17 @@ import type {
 
 const STORAGE_KEY = "nomi.desktop.profile";
 
+export interface DesktopRemoteEntry {
+  id: string;
+  name: string;
+  profile: ConnectionProfile;
+}
+
+export interface DesktopRemoteCatalog {
+  activeRemoteId: string;
+  remotes: DesktopRemoteEntry[];
+}
+
 interface RemoteDefaults {
   host?: string | null;
   port?: number | string | null;
@@ -69,36 +80,137 @@ function createDefaultProfile(): ConnectionProfile {
   };
 }
 
-export function loadProfile(): ConnectionProfile {
+function createDefaultRemoteEntry(): DesktopRemoteEntry {
+  const profile = createDefaultProfile();
+  return {
+    id: profile.clientId,
+    name: "默认远端",
+    profile,
+  };
+}
+
+function normalizeProfile(
+  profile: Partial<ConnectionProfile> | undefined,
+  fallback?: ConnectionProfile,
+): ConnectionProfile {
+  const defaultProfile = fallback || createDefaultProfile();
+  return {
+    host: profile?.host || defaultProfile.host,
+    port: profile?.port || defaultProfile.port,
+    token: profile?.token || "",
+    clientId: profile?.clientId || defaultProfile.clientId,
+    defaultSessionId:
+      profile?.defaultSessionId || `desktop:${profile?.clientId || defaultProfile.clientId}`,
+    lastBoundSessionId:
+      profile?.lastBoundSessionId ||
+      profile?.defaultSessionId ||
+      `desktop:${profile?.clientId || defaultProfile.clientId}`,
+    themePreference:
+      profile?.themePreference === "light" || profile?.themePreference === "dark"
+        ? profile.themePreference
+        : "system",
+  };
+}
+
+function normalizeRemoteEntry(entry: Partial<DesktopRemoteEntry> | undefined): DesktopRemoteEntry {
+  const profile = normalizeProfile(entry?.profile, createDefaultProfile());
+  return {
+    id: entry?.id || profile.clientId,
+    name: entry?.name || "远端",
+    profile,
+  };
+}
+
+export function loadRemoteCatalog(): DesktopRemoteCatalog {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) {
-    return createDefaultProfile();
+    const entry = createDefaultRemoteEntry();
+    return { activeRemoteId: entry.id, remotes: [entry] };
   }
   try {
-    const parsed = JSON.parse(raw) as Partial<ConnectionProfile>;
-    const fallback = createDefaultProfile();
-    return {
-      host: parsed.host || fallback.host,
-      port: parsed.port || fallback.port,
-      token: parsed.token || "",
-      clientId: parsed.clientId || fallback.clientId,
-      defaultSessionId: parsed.defaultSessionId || `desktop:${parsed.clientId || fallback.clientId}`,
-      lastBoundSessionId:
-        parsed.lastBoundSessionId ||
-        parsed.defaultSessionId ||
-        `desktop:${parsed.clientId || fallback.clientId}`,
-      themePreference:
-        parsed.themePreference === "light" || parsed.themePreference === "dark"
-          ? parsed.themePreference
-          : "system",
-    };
+    const parsed = JSON.parse(raw) as Partial<DesktopRemoteCatalog> & Partial<ConnectionProfile>;
+    if (Array.isArray(parsed.remotes) && parsed.remotes.length > 0) {
+      const remotes = parsed.remotes.map((entry) => normalizeRemoteEntry(entry));
+      const activeRemoteId = parsed.activeRemoteId || remotes[0].id;
+      return {
+        activeRemoteId: remotes.some((entry) => entry.id === activeRemoteId)
+          ? activeRemoteId
+          : remotes[0].id,
+        remotes,
+      };
+    }
+    const entry = normalizeRemoteEntry({
+      id: parsed.clientId || undefined,
+      name: "默认远端",
+      profile: normalizeProfile(parsed, createDefaultProfile()),
+    });
+    return { activeRemoteId: entry.id, remotes: [entry] };
   } catch {
-    return createDefaultProfile();
+    const entry = createDefaultRemoteEntry();
+    return { activeRemoteId: entry.id, remotes: [entry] };
   }
 }
 
+export function saveRemoteCatalog(catalog: DesktopRemoteCatalog): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(catalog));
+}
+
+export function loadProfile(): ConnectionProfile {
+  const catalog = loadRemoteCatalog();
+  return catalog.remotes.find((entry) => entry.id === catalog.activeRemoteId)?.profile || catalog.remotes[0].profile;
+}
+
 export function saveProfile(profile: ConnectionProfile): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
+  const catalog = loadRemoteCatalog();
+  const activeIndex = catalog.remotes.findIndex((entry) => entry.id === catalog.activeRemoteId);
+  const nextEntry: DesktopRemoteEntry = {
+    id: catalog.activeRemoteId,
+    name: catalog.remotes[activeIndex]?.name || "远端",
+    profile,
+  };
+  const nextRemotes =
+    activeIndex >= 0
+      ? catalog.remotes.map((entry, index) => (index === activeIndex ? nextEntry : entry))
+      : [nextEntry, ...catalog.remotes];
+  saveRemoteCatalog({
+    activeRemoteId: nextEntry.id,
+    remotes: nextRemotes,
+  });
+}
+
+export function upsertRemoteEntry(
+  catalog: DesktopRemoteCatalog,
+  entry: Omit<DesktopRemoteEntry, "id" | "profile"> & {
+    id?: string;
+    profile: ConnectionProfile;
+  },
+): DesktopRemoteCatalog {
+  const id = entry.id || entry.profile.clientId;
+  const nextEntry: DesktopRemoteEntry = {
+    id,
+    name: entry.name || "远端",
+    profile: entry.profile,
+  };
+  const index = catalog.remotes.findIndex((item) => item.id === id);
+  const remotes = index >= 0 ? catalog.remotes.map((item, i) => (i === index ? nextEntry : item)) : [...catalog.remotes, nextEntry];
+  return {
+    activeRemoteId: id,
+    remotes,
+  };
+}
+
+export function deleteRemoteEntry(catalog: DesktopRemoteCatalog, remoteId: string): DesktopRemoteCatalog {
+  const remotes = catalog.remotes.filter((item) => item.id !== remoteId);
+  if (remotes.length === 0) {
+    const fallback = createDefaultRemoteEntry();
+    return { activeRemoteId: fallback.id, remotes: [fallback] };
+  }
+  const activeRemoteId =
+    catalog.activeRemoteId === remoteId ? remotes[0].id : catalog.activeRemoteId;
+  return {
+    activeRemoteId: remotes.some((item) => item.id === activeRemoteId) ? activeRemoteId : remotes[0].id,
+    remotes,
+  };
 }
 
 export async function applyRemoteDefaults(

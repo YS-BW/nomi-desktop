@@ -47,6 +47,12 @@ In the current codebase, this primarily includes:
 
 Desktop must treat those as external dependencies and integration contracts, not as local implementation detail.
 
+## Core Contact
+
+When the user asks desktop to consult the core owner, use this Codex session id:
+
+- `019dca42-b13d-7d22-9051-e8934a80f75a`
+
 ## Shared Contract Boundary
 
 Desktop consumes, but does not unilaterally redefine:

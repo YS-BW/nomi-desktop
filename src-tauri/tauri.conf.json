@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Nomi Desktop",
+  "productName": "Nomi",
   "version": "0.1.0",
   "identifier": "com.nomi.desktop",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Nomi Desktop",
+        "title": "Nomi",
         "width": 1440,
         "height": 960,
         "resizable": true

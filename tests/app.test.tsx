@@ -15,19 +15,34 @@ const storeMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/lib/store", () => ({
-  loadProfile: () => ({
-    host: "127.0.0.1",
-    port: "8765",
-    token: "secret-token",
-    clientId: "test-client",
-    defaultSessionId: "desktop:test-client",
-    lastBoundSessionId: "desktop:test-client",
-    themePreference: "system",
+  loadRemoteCatalog: () => ({
+    activeRemoteId: "test-client",
+    remotes: [
+      {
+        id: "test-client",
+        name: "默认远端",
+        profile: {
+          host: "127.0.0.1",
+          port: "8765",
+          token: "secret-token",
+          clientId: "test-client",
+          defaultSessionId: "desktop:test-client",
+          lastBoundSessionId: "desktop:test-client",
+          themePreference: "system",
+        },
+      },
+    ],
   }),
   applyRemoteDefaults: vi.fn(async (profile) => profile),
   loadDesktopSidebarData: storeMocks.loadDesktopSidebarData,
   saveProfile: vi.fn(),
+  saveRemoteCatalog: vi.fn(),
   uploadRemoteSkillZip: storeMocks.uploadRemoteSkillZip,
+  upsertRemoteEntry: vi.fn((catalog: { remotes: Array<{ id: string; name: string; profile: unknown }> }, entry: { id: string; name: string; profile: unknown }) => ({
+    ...catalog,
+    remotes: catalog.remotes.map((item) => (item.id === entry.id ? { id: item.id, name: entry.name, profile: entry.profile } : item)),
+  })),
+  deleteRemoteEntry: vi.fn((catalog) => catalog),
 }));
 
 const mockSend = vi.fn(async () => true);
