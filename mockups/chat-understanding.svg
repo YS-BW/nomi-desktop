@@ -1,0 +1,94 @@
+<svg width="1600" height="1024" viewBox="0 0 1600 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="80" x2="1440" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F2EA"/>
+      <stop offset="1" stop-color="#EFE7DB"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="284" y1="108" x2="1388" y2="920" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF9"/>
+      <stop offset="1" stop-color="#FBF7F1"/>
+    </linearGradient>
+    <filter id="shadow" x="174" y="62" width="1252" height="900" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="16"/>
+      <feGaussianBlur stdDeviation="25"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.181667 0 0 0 0 0.145333 0 0 0 0 0.105972 0 0 0 0.12 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_0_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_0_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1024" fill="#201A17"/>
+  <rect x="32" y="32" width="1536" height="960" rx="36" fill="url(#bg)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="224" y="96" width="1152" height="800" rx="32" fill="url(#panel)"/>
+    <rect x="224.75" y="96.75" width="1150.5" height="798.5" rx="31.25" stroke="#E6DED1" stroke-width="1.5"/>
+  </g>
+
+  <rect x="224" y="96" width="248" height="800" rx="32" fill="#F5EFE6"/>
+  <path d="M472 96H1344C1361.67 96 1376 110.327 1376 128V864C1376 881.673 1361.67 896 1344 896H472V96Z" fill="#FFFDF9"/>
+  <line x1="472" y1="96" x2="472" y2="896" stroke="#EAE2D6" stroke-width="1.5"/>
+  <line x1="472" y1="168" x2="1376" y2="168" stroke="#EEE6DB" stroke-width="1.5"/>
+
+  <circle cx="280" cy="132" r="18" fill="#E8DED0"/>
+  <rect x="310" y="116" width="118" height="32" rx="16" fill="#ECE3D6"/>
+  <rect x="246" y="190" width="204" height="48" rx="16" fill="#EDE4D8"/>
+  <text x="274" y="220" fill="#312723" font-size="18" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">Nomi</text>
+  <rect x="246" y="258" width="204" height="86" rx="20" fill="#FFF9F1"/>
+  <text x="270" y="289" fill="#2F2622" font-size="16" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">当前会话</text>
+  <text x="270" y="318" fill="#776B62" font-size="14" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">desktop:lixinlv</text>
+  <text x="270" y="339" fill="#9B8F84" font-size="13" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">已连接 · 正在待机</text>
+
+  <text x="246" y="390" fill="#8A7D72" font-size="13" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif" letter-spacing="0.08em">SESSIONS</text>
+  <rect x="246" y="412" width="204" height="58" rx="18" fill="#FFFFFF"/>
+  <rect x="246.75" y="412.75" width="202.5" height="56.5" rx="17.25" stroke="#E9E0D4" stroke-width="1.5"/>
+  <text x="268" y="439" fill="#2F2622" font-size="15" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">产品讨论</text>
+  <text x="268" y="459" fill="#8A7D72" font-size="13" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">刚刚更新</text>
+  <rect x="246" y="482" width="204" height="58" rx="18" fill="#F6F0E7"/>
+  <text x="268" y="509" fill="#534842" font-size="15" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">微信会话</text>
+  <text x="268" y="529" fill="#9B8F84" font-size="13" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">提醒与碎聊</text>
+  <rect x="246" y="552" width="204" height="58" rx="18" fill="#F6F0E7"/>
+  <text x="268" y="579" fill="#534842" font-size="15" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">日报任务</text>
+  <text x="268" y="599" fill="#9B8F84" font-size="13" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">今日 08:00</text>
+
+  <text x="512" y="140" fill="#221B18" font-size="22" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">与 Nomi 聊天</text>
+  <text x="512" y="160" fill="#877A70" font-size="14" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">一个真正的 Chat 应用，核心永远是会话正文，而不是调试面板。</text>
+
+  <rect x="1240" y="118" width="98" height="34" rx="17" fill="#F4EEE7"/>
+  <text x="1271" y="140" fill="#2D2623" font-size="15" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">在线</text>
+
+  <rect x="520" y="214" width="388" height="132" rx="28" fill="#F6F1E9"/>
+  <text x="548" y="256" fill="#211B18" font-size="18" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">你好呀，今天要继续桌宠桌面端吗？</text>
+  <text x="548" y="290" fill="#6E635A" font-size="15" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">我可以先帮你把界面定义清楚，再落交互和状态。</text>
+  <text x="548" y="319" fill="#A09286" font-size="13" font-weight="600" font-family="SF Pro Text, PingFang SC, sans-serif">Nomi · 13:52</text>
+
+  <rect x="1018" y="372" width="286" height="88" rx="28" fill="#EFE7DB"/>
+  <text x="1048" y="417" fill="#201A17" font-size="17" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">我想先看一个更像聊天产品的版本</text>
+  <text x="1172" y="443" fill="#8F8276" font-size="13" font-weight="600" font-family="SF Pro Text, PingFang SC, sans-serif">你 · 13:53</text>
+
+  <rect x="520" y="500" width="592" height="172" rx="32" fill="#FBF7F1"/>
+  <rect x="520.75" y="500.75" width="590.5" height="170.5" rx="31.25" stroke="#ECE3D8" stroke-width="1.5"/>
+  <text x="548" y="544" fill="#8A7D72" font-size="12" font-weight="800" font-family="SF Pro Text, PingFang SC, sans-serif" letter-spacing="0.1em">ASSISTANT</text>
+  <text x="548" y="583" fill="#241D1A" font-size="20" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">一个好的 Chat 应用应该长这样：</text>
+  <text x="548" y="621" fill="#4D433D" font-size="17" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">1. 左边是轻量会话导航，不抢正文。</text>
+  <text x="548" y="651" fill="#4D433D" font-size="17" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">2. 中间是连续对话，消息层次清楚，状态弱化。</text>
+  <text x="548" y="681" fill="#4D433D" font-size="17" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">3. 底部输入器永远稳定可见，支持发送和打断。</text>
+
+  <rect x="1142" y="528" width="162" height="104" rx="24" fill="#FFF5DF"/>
+  <text x="1171" y="563" fill="#8B652D" font-size="12" font-weight="800" font-family="SF Pro Text, PingFang SC, sans-serif" letter-spacing="0.08em">TASK</text>
+  <text x="1171" y="595" fill="#473829" font-size="17" font-weight="700" font-family="SF Pro Text, PingFang SC, sans-serif">18:00</text>
+  <text x="1171" y="619" fill="#6E5844" font-size="14" font-weight="500" font-family="SF Pro Text, PingFang SC, sans-serif">提醒你提交日报</text>
+
+  <rect x="512" y="758" width="832" height="98" rx="28" fill="#F5F0E8"/>
+  <rect x="512.75" y="758.75" width="830.5" height="96.5" rx="27.25" stroke="#E7DED3" stroke-width="1.5"/>
+  <text x="548" y="810" fill="#8A7D72" font-size="18" font-weight="600" font-family="SF Pro Text, PingFang SC, sans-serif">给 Nomi 发送消息...</text>
+  <circle cx="1242" cy="807" r="24" fill="#DDD4C7"/>
+  <path d="M1234 807H1250" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="1298" cy="807" r="24" fill="#2E2723"/>
+  <path d="M1290 807H1306" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M1298 799V815" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+
+  <text x="520" y="936" fill="#897D73" font-size="13" font-weight="600" font-family="SF Pro Text, PingFang SC, sans-serif">概念图：我理解中的桌面 Chat 应用，重点是“会话优先、状态克制、输入稳定”。</text>
+</svg>
