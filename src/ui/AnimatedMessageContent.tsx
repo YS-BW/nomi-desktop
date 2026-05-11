@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import { MarkdownContent } from "./MarkdownContent";
 
@@ -23,7 +23,7 @@ interface AnimatedMessageContentProps {
   animate: boolean;
 }
 
-export function AnimatedMessageContent(props: AnimatedMessageContentProps) {
+function AnimatedMessageContentInner(props: AnimatedMessageContentProps) {
   const { content, animate } = props;
   const [visibleLength, setVisibleLength] = useState(animate ? 0 : content.length);
   const visibleLengthRef = useRef(visibleLength);
@@ -100,3 +100,5 @@ export function AnimatedMessageContent(props: AnimatedMessageContentProps) {
 
   return <MarkdownContent content={visibleContent} />;
 }
+
+export const AnimatedMessageContent = memo(AnimatedMessageContentInner);

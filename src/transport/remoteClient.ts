@@ -21,12 +21,20 @@ interface SocketAdapter {
   disconnect(): void | Promise<void>;
 }
 
+const TAURI_CONNECT_TIMEOUT_MS = 5000;
+
 function classifyConnectError(error: unknown): RemoteClientError {
   const message = String(error);
   if (/401|unauthorized/i.test(message)) {
     return {
       kind: "auth_error",
       message: "remote 鉴权失败，请检查 token。",
+    };
+  }
+  if (/timeout/i.test(message)) {
+    return {
+      kind: "transport_error",
+      message: "连接当前 remote 超时，请检查 host、port 或网络连通性。",
     };
   }
   return {
@@ -43,6 +51,11 @@ async function createTauriSocket(
   profile: ConnectionProfile,
   callbacks: RemoteClientCallbacks,
 ): Promise<SocketAdapter> {
+  console.info("[nomi-desktop] createTauriSocket", {
+    host: profile.host,
+    port: profile.port,
+    hasToken: Boolean(profile.token),
+  });
   const socket = await TauriWebSocket.connect(`ws://${profile.host}:${profile.port}/ws`, {
     headers: {
       Authorization: `Bearer ${profile.token}`,
@@ -87,6 +100,11 @@ function createBrowserSocket(
   profile: ConnectionProfile,
   callbacks: RemoteClientCallbacks,
 ): SocketAdapter {
+  console.info("[nomi-desktop] createBrowserSocket", {
+    host: profile.host,
+    port: profile.port,
+    hasToken: Boolean(profile.token),
+  });
   const url = `ws://${profile.host}:${profile.port}/ws?token=${encodeURIComponent(profile.token)}`;
   const socket = new WebSocket(url);
   let opened = false;
@@ -198,10 +216,33 @@ export class RemoteClient {
       },
     };
     try {
-      this.socket = isTauriRuntime()
-        ? await createTauriSocket(profile, wrappedCallbacks)
-        : createBrowserSocket(profile, wrappedCallbacks);
+      if (isTauriRuntime()) {
+        let timedOut = false;
+        const socketPromise = createTauriSocket(profile, wrappedCallbacks);
+        socketPromise
+          .then((lateSocket) => {
+            if (!timedOut && currentSeq === this.connectionSeq) {
+              return;
+            }
+            void lateSocket.disconnect();
+          })
+          .catch(() => {});
+        this.socket = await Promise.race<SocketAdapter>([
+          socketPromise,
+          new Promise<SocketAdapter>((_, reject) => {
+            window.setTimeout(() => {
+              timedOut = true;
+              reject(new Error("connect timeout"));
+            }, TAURI_CONNECT_TIMEOUT_MS);
+          }),
+        ]);
+      } else {
+        this.socket = createBrowserSocket(profile, wrappedCallbacks);
+      }
     } catch (error) {
+      if (currentSeq === this.connectionSeq) {
+        this.connectionSeq += 1;
+      }
       this.socket = null;
       callbacks.onError?.(classifyConnectError(error));
     }

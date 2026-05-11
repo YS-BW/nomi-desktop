@@ -4,26 +4,57 @@ import {
   applyRemoteDefaults,
   deleteRemoteEntry,
   loadRemoteCatalog,
-  loadDesktopSidebarData,
+  registerRemoteSession,
+  syncRemoteSessions,
   saveProfile,
   saveRemoteCatalog,
+  unregisterRemoteSession,
   upsertRemoteEntry,
   uploadRemoteSkillZip,
   type DesktopRemoteCatalog,
 } from "../lib/store";
+import {
+  createEmptyRemoteSessionListState,
+  mergeRemoteSessionItems,
+  normalizeRemoteSessionItem,
+  type RemoteSessionItem,
+} from "../lib/remoteSessions";
 import type {
-  ConnectionProfile,
   DesktopActions,
+  DesktopConnectionProfile,
   RemoteClientError,
   RemoteCommand,
   ThemePreference,
 } from "../lib/types";
 import { createDesktopSessionId, createStableClientId } from "../lib/ids";
+import {
+  DEFAULT_ACCENT_COLOR,
+  getAccentContrastColor,
+  mixHex,
+  normalizeAccentColor,
+  rgbaFromHex,
+} from "../lib/themeAccent";
 import { createInitialDesktopState, desktopReducer } from "../state/reducer";
 import { RemoteClient } from "../transport/remoteClient";
 import { MainShell } from "./MainShell";
 
 const HISTORY_LIMIT = 100;
+const SESSION_PAGE_SIZE = 100;
+
+interface SessionProtocolEvent extends Record<string, unknown> {
+  type?: string;
+  session_id?: string;
+  sessions?: Array<Record<string, unknown>>;
+  next_page_token?: string | null;
+  total_count?: number | null;
+  title?: string | null;
+  created_at_ms?: number | null;
+  deleted?: boolean;
+  resource?: string;
+  code?: string;
+  command?: string;
+  message?: string;
+}
 
 type ResolvedTheme = "light" | "dark";
 
@@ -68,17 +99,43 @@ function useResolvedTheme(preference: ThemePreference): ResolvedTheme {
   return systemTheme;
 }
 
-function applyDocumentTheme(theme: ResolvedTheme) {
+function applyDocumentTheme(theme: ResolvedTheme, accentColor: string) {
   if (typeof document === "undefined") {
     return;
   }
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
-  delete document.documentElement.dataset.windowKind;
+  const root = document.documentElement;
+  const normalizedAccent = normalizeAccentColor(accentColor);
+  const accentContrast = getAccentContrastColor(normalizedAccent);
+  const accentSoft =
+    theme === "dark"
+      ? rgbaFromHex(normalizedAccent, 0.28)
+      : rgbaFromHex(normalizedAccent, 0.18);
+  const accentSoftStrong =
+    theme === "dark"
+      ? rgbaFromHex(normalizedAccent, 0.36)
+      : rgbaFromHex(normalizedAccent, 0.24);
+  const accentBorder =
+    theme === "dark"
+      ? rgbaFromHex(normalizedAccent, 0.42)
+      : rgbaFromHex(normalizedAccent, 0.28);
+  const accentHover =
+    theme === "dark"
+      ? mixHex(normalizedAccent, "#ffffff", 0.1)
+      : mixHex(normalizedAccent, "#111827", 0.08);
+
+  root.dataset.theme = theme;
+  root.style.colorScheme = theme;
+  root.style.setProperty("--accent", normalizedAccent);
+  root.style.setProperty("--accent-contrast", accentContrast);
+  root.style.setProperty("--accent-soft", accentSoft);
+  root.style.setProperty("--accent-soft-strong", accentSoftStrong);
+  root.style.setProperty("--accent-border", accentBorder);
+  root.style.setProperty("--accent-hover", accentHover);
+  delete root.dataset.windowKind;
   delete document.body.dataset.windowKind;
 }
 
-function hasConnectableProfile(profile: ConnectionProfile): boolean {
+function hasConnectableProfile(profile: DesktopConnectionProfile): boolean {
   return Boolean(profile.host.trim() && profile.port.trim() && profile.token.trim());
 }
 
@@ -106,6 +163,7 @@ function getCommandBlockMessage(state: ReturnType<typeof createInitialDesktopSta
 
 export function App() {
   const initialRemoteCatalog = useMemo(() => loadRemoteCatalog(), []);
+  console.info("[nomi-desktop] initial remote catalog", initialRemoteCatalog);
   const initialProfile =
     initialRemoteCatalog.remotes.find((entry) => entry.id === initialRemoteCatalog.activeRemoteId)?.profile ||
     initialRemoteCatalog.remotes[0].profile;
@@ -119,13 +177,28 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [composerPhase, setComposerPhase] = useState<"idle" | "interrupting" | "sending">("idle");
   const [previewThemePreference, setPreviewThemePreference] = useState<ThemePreference | null>(null);
+  const [sessionListState, setSessionListState] = useState(createEmptyRemoteSessionListState);
   const clientRef = useRef(new RemoteClient());
   const autoConnectDoneRef = useRef(false);
+  const remoteCatalogRef = useRef(initialRemoteCatalog);
+  const activeRemoteIdRef = useRef(initialRemoteCatalog.activeRemoteId);
+  const sessionListStateRef = useRef(sessionListState);
+  const sessionListRequestModeRef = useRef<"replace" | "append">("replace");
   const resolvedTheme = useResolvedTheme(previewThemePreference ?? state.profile.themePreference);
 
   useEffect(() => {
-    applyDocumentTheme(resolvedTheme);
-  }, [resolvedTheme]);
+    remoteCatalogRef.current = remoteCatalog;
+    activeRemoteIdRef.current = remoteCatalog.activeRemoteId;
+    console.info("[nomi-desktop] remote catalog updated", remoteCatalog);
+  }, [remoteCatalog]);
+
+  useEffect(() => {
+    sessionListStateRef.current = sessionListState;
+  }, [sessionListState]);
+
+  useEffect(() => {
+    applyDocumentTheme(resolvedTheme, state.profile.accentColor || DEFAULT_ACCENT_COLOR);
+  }, [resolvedTheme, state.profile.accentColor]);
 
   useEffect(() => {
     return () => {
@@ -135,6 +208,10 @@ export function App() {
 
   useEffect(() => {
     void applyRemoteDefaults(state.profile).then((nextProfile) => {
+      console.info("[nomi-desktop] applyRemoteDefaults resolved", {
+        before: state.profile,
+        after: nextProfile,
+      });
       if (JSON.stringify(nextProfile) === JSON.stringify(state.profile)) {
         return;
       }
@@ -145,10 +222,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void refreshSidebarData();
-  }, []);
-
-  useEffect(() => {
     if (autoConnectDoneRef.current) {
       return;
     }
@@ -156,7 +229,7 @@ export function App() {
       return;
     }
     autoConnectDoneRef.current = true;
-    connect();
+    connect(state.profile, activeRemoteIdRef.current);
   }, [state.profile]);
 
   useEffect(() => {
@@ -178,12 +251,12 @@ export function App() {
       latestEvent.ok &&
       latestEvent.action
     ) {
-      if (
-        latestEvent.action.startsWith("skill_") ||
-        latestEvent.action.startsWith("mcp_") ||
-        latestEvent.action.startsWith("task_") ||
-        latestEvent.action === "clear_remote_runtime"
-      ) {
+      const shouldRefreshSidebar =
+        latestEvent.resource === "skill" ||
+        latestEvent.resource === "mcp" ||
+        latestEvent.resource === "task" ||
+        latestEvent.action === "clear_remote_runtime";
+      if (shouldRefreshSidebar) {
         void refreshSidebarData();
       }
       if (latestEvent.action === "clear_remote_runtime") {
@@ -195,6 +268,9 @@ export function App() {
   useEffect(() => {
     const handleFocus = () => {
       void refreshSidebarData();
+      if (state.ownerReady) {
+        void refreshRemoteSessions();
+      }
     };
     window.addEventListener("focus", handleFocus);
     return () => {
@@ -202,15 +278,46 @@ export function App() {
     };
   }, [state.connectionStatus, state.currentSessionId]);
 
+  useEffect(() => {
+    setSessionListState(createEmptyRemoteSessionListState());
+  }, [remoteCatalog.activeRemoteId]);
+
+  useEffect(() => {
+    if (!state.ownerReady) {
+      return;
+    }
+    void refreshRemoteSessions();
+  }, [remoteCatalog.activeRemoteId, state.ownerReady]);
+
   function persistRemoteCatalog(nextCatalog: DesktopRemoteCatalog) {
+    remoteCatalogRef.current = nextCatalog;
     setRemoteCatalog(nextCatalog);
     saveRemoteCatalog(nextCatalog);
   }
 
-  function updateProfile(patch: Partial<ConnectionProfile>) {
+  function updateRemoteCatalog(transform: (current: DesktopRemoteCatalog) => DesktopRemoteCatalog) {
+    const nextCatalog = transform(remoteCatalogRef.current);
+    persistRemoteCatalog(nextCatalog);
+    return nextCatalog;
+  }
+
+  function rememberSession(sessionId: string, remoteId = activeRemoteIdRef.current) {
+    const trimmedSessionId = sessionId.trim();
+    if (!trimmedSessionId) {
+      return;
+    }
+    const nextCatalog = registerRemoteSession(remoteCatalogRef.current, remoteId, trimmedSessionId);
+    if (nextCatalog === remoteCatalogRef.current) {
+      return;
+    }
+    persistRemoteCatalog(nextCatalog);
+  }
+
+  function updateProfile(patch: Partial<DesktopConnectionProfile>) {
     const nextProfile = {
       ...state.profile,
       ...patch,
+      accentColor: normalizeAccentColor(patch.accentColor || state.profile.accentColor || DEFAULT_ACCENT_COLOR),
       lastBoundSessionId: state.profile.defaultSessionId,
     };
     persistRemoteCatalog(upsertRemoteEntry(remoteCatalog, {
@@ -248,22 +355,262 @@ export function App() {
     void sendCommand({ type: "get_status", session_id: sessionId });
   }
 
-  async function refreshSidebarData() {
-    if (state.ownerReady) {
-      await sendCommand({ type: "get_sidebar", session_id: state.currentSessionId });
-      return;
+  async function refreshProviderState() {
+    await sendCommand({ type: "list_providers" as never });
+  }
+
+  async function setProviderSettings(input: {
+    provider: string;
+    apiKey?: string | null;
+    apiBase?: string | null;
+    model?: string | null;
+    clearApiKey?: boolean | null;
+  }) {
+    const command: Record<string, unknown> = {
+      type: "update_provider" as never,
+      provider: input.provider,
+      model: input.model,
+    };
+    if (input.apiKey !== null && input.apiKey !== undefined) {
+      command.api_key = input.apiKey;
     }
-    try {
-      const data = await loadDesktopSidebarData();
-      dispatch({ type: "sidebar/data", data });
-    } catch {
-      return;
+    if (input.apiBase !== null && input.apiBase !== undefined) {
+      command.api_base = input.apiBase;
+    }
+    if (input.clearApiKey !== null && input.clearApiKey !== undefined) {
+      command.clear_api_key = input.clearApiKey;
+    }
+    return sendCommand(command as unknown as RemoteCommand);
+  }
+
+  async function setActiveProvider(input: {
+    provider: string;
+    model?: string | null;
+  }) {
+    return sendCommand({
+      type: "set_active_provider" as never,
+      provider: input.provider,
+      model: input.model,
+    } as RemoteCommand);
+  }
+
+  async function reloadRuntime() {
+    return sendCommand({ type: "reload_runtime" as never } as RemoteCommand);
+  }
+
+  function syncRemoteSessionCatalogFromList(remoteId: string, items: RemoteSessionItem[]) {
+    const sessionIds = items.map((item) => item.sessionId);
+    updateRemoteCatalog((current) =>
+      syncRemoteSessions(current, remoteId, sessionIds),
+    );
+  }
+
+  async function requestRemoteSessions(options?: {
+    append?: boolean;
+    pageToken?: string | null;
+  }) {
+    const append = options?.append === true;
+    const pageToken = options?.pageToken ?? null;
+    sessionListRequestModeRef.current = append ? "append" : "replace";
+    setSessionListState((current) => ({
+      ...current,
+      loading: !append,
+      loadingMore: append,
+      error: null,
+    }));
+    const ok = await sendCommand({
+      type: "list_sessions" as never,
+      page_token: pageToken,
+      page_size: SESSION_PAGE_SIZE,
+      include_archived: false,
+    } as RemoteCommand);
+    if (!ok) {
+      setSessionListState((current) => ({
+        ...current,
+        loading: false,
+        loadingMore: false,
+        creating: false,
+        deletingSessionId: null,
+        error: current.error || "会话列表请求失败。",
+      }));
     }
   }
 
-  function connect(profileOverride: ConnectionProfile = state.profile) {
+  async function refreshRemoteSessions() {
+    await requestRemoteSessions({ append: false, pageToken: null });
+  }
+
+  async function loadMoreRemoteSessions() {
+    if (!sessionListState.nextPageToken || sessionListState.loadingMore) {
+      return;
+    }
+    await requestRemoteSessions({ append: true, pageToken: sessionListState.nextPageToken });
+  }
+
+  function handleSessionProtocolEvent(rawEvent: SessionProtocolEvent, sourceRemoteId: string) {
+    if (sourceRemoteId !== activeRemoteIdRef.current) {
+      return;
+    }
+
+    if (rawEvent.type === "session_list") {
+      const incoming = (rawEvent.sessions || []).map((item) => normalizeRemoteSessionItem(item));
+      const nextItems =
+        sessionListRequestModeRef.current === "append"
+          ? mergeRemoteSessionItems(sessionListStateRef.current.items, incoming)
+          : incoming;
+      syncRemoteSessionCatalogFromList(sourceRemoteId, nextItems);
+      setSessionListState((current) => ({
+        ...current,
+        items: nextItems,
+        nextPageToken:
+          typeof rawEvent.next_page_token === "string" && rawEvent.next_page_token.trim().length > 0
+            ? rawEvent.next_page_token
+            : null,
+        totalCount: typeof rawEvent.total_count === "number" ? rawEvent.total_count : current.totalCount,
+        loading: false,
+        loadingMore: false,
+        initialized: true,
+        error: null,
+      }));
+      return;
+    }
+
+    if (rawEvent.type === "session_created") {
+      const sessionId =
+        typeof rawEvent.session_id === "string" && rawEvent.session_id.trim().length > 0
+          ? rawEvent.session_id
+          : null;
+      if (!sessionId) {
+        setSessionListState((current) => ({ ...current, creating: false }));
+        return;
+      }
+      const createdItem = normalizeRemoteSessionItem({
+        key: sessionId,
+        session_id: sessionId,
+        title: rawEvent.title,
+        created_at_ms: rawEvent.created_at_ms,
+        updated_at_ms: rawEvent.created_at_ms,
+        message_count: 0,
+        archived: false,
+        source: "remote",
+      });
+      const exists = sessionListStateRef.current.items.some((item) => item.sessionId === sessionId);
+      const items = mergeRemoteSessionItems(sessionListStateRef.current.items, [createdItem]);
+      syncRemoteSessionCatalogFromList(sourceRemoteId, items);
+      setSessionListState((current) => ({
+        ...current,
+        items,
+        totalCount:
+          current.totalCount === null
+            ? current.totalCount
+            : exists
+              ? current.totalCount
+              : current.totalCount + 1,
+        creating: false,
+        initialized: true,
+        error: null,
+      }));
+      return;
+    }
+
+    if (rawEvent.type === "session_deleted") {
+      const sessionId =
+        typeof rawEvent.session_id === "string" && rawEvent.session_id.trim().length > 0
+          ? rawEvent.session_id
+          : null;
+      if (!sessionId) {
+        setSessionListState((current) => ({ ...current, deletingSessionId: null }));
+        return;
+      }
+      const removed = sessionListStateRef.current.items.some((item) => item.sessionId === sessionId);
+      const items = sessionListStateRef.current.items.filter((item) => item.sessionId !== sessionId);
+      syncRemoteSessionCatalogFromList(sourceRemoteId, items);
+      setSessionListState((current) => ({
+        ...current,
+        items,
+        totalCount:
+          current.totalCount === null
+            ? current.totalCount
+            : removed
+              ? Math.max(0, current.totalCount - 1)
+              : current.totalCount,
+        deletingSessionId: null,
+        error: null,
+      }));
+      updateRemoteCatalog((current) => unregisterRemoteSession(current, sourceRemoteId, sessionId));
+      if (sessionId === state.profile.defaultSessionId || sessionId === state.profile.lastBoundSessionId) {
+        const fallbackSessionId = state.currentSessionId === sessionId ? "" : state.currentSessionId;
+        if (fallbackSessionId) {
+          const nextProfile = {
+            ...state.profile,
+            defaultSessionId: fallbackSessionId,
+            lastBoundSessionId: fallbackSessionId,
+          };
+          saveProfile(nextProfile);
+          persistRemoteCatalog(
+            upsertRemoteEntry(remoteCatalogRef.current, {
+              id: remoteCatalogRef.current.activeRemoteId,
+              name:
+                remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteCatalogRef.current.activeRemoteId)?.name || "远端",
+              profile: nextProfile,
+              sessionIds:
+                remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteCatalogRef.current.activeRemoteId)?.sessionIds || [],
+            }),
+          );
+          dispatch({ type: "profile/update", profile: nextProfile });
+        }
+      }
+      return;
+    }
+
+    if (rawEvent.type === "error") {
+      if (rawEvent.command === "list_sessions") {
+        setSessionListState((current) => ({
+          ...current,
+          loading: false,
+          loadingMore: false,
+          error: typeof rawEvent.message === "string" ? rawEvent.message : "会话列表加载失败。",
+        }));
+      }
+      if (rawEvent.command === "create_session") {
+        setSessionListState((current) => ({
+          ...current,
+          creating: false,
+          error: typeof rawEvent.message === "string" ? rawEvent.message : current.error,
+        }));
+      }
+      if (rawEvent.command === "delete_session") {
+        setSessionListState((current) => ({
+          ...current,
+          deletingSessionId: null,
+          error: typeof rawEvent.message === "string" ? rawEvent.message : current.error,
+        }));
+      }
+    }
+  }
+
+  async function refreshSidebarData() {
+    if (!state.ownerReady) {
+      dispatch({ type: "sidebar/reset" });
+      return;
+    }
+    await sendCommand({ type: "get_sidebar", session_id: state.currentSessionId });
+  }
+
+  function connect(
+    profileOverride: DesktopConnectionProfile = state.profile,
+    remoteIdOverride = activeRemoteIdRef.current,
+  ) {
     autoConnectDoneRef.current = true;
     setComposerPhase("idle");
+    console.info("[nomi-desktop] connect requested", {
+      remoteId: remoteIdOverride,
+      host: profileOverride.host,
+      port: profileOverride.port,
+      hasToken: Boolean(profileOverride.token),
+      clientId: profileOverride.clientId,
+      sessionId: profileOverride.defaultSessionId,
+    });
     dispatch({
       type: "connection/status",
       status: "connecting",
@@ -273,8 +620,22 @@ export function App() {
       bindCompleted: false,
     });
     void clientRef.current.connect(profileOverride, {
-      onOpen: () => {},
+      onOpen: () => {
+        console.info("[nomi-desktop] websocket opened", {
+          remoteId: remoteIdOverride,
+          host: profileOverride.host,
+          port: profileOverride.port,
+        });
+      },
       onClose: (error) => {
+        if (remoteIdOverride !== activeRemoteIdRef.current) {
+          return;
+        }
+        console.info("[nomi-desktop] websocket closed", {
+          remoteId: remoteIdOverride,
+          error,
+        });
+        dispatch({ type: "sidebar/reset" });
         dispatch({
           type: "connection/status",
           status: "disconnected",
@@ -286,6 +647,14 @@ export function App() {
         void refreshSidebarData();
       },
       onError: (error: RemoteClientError) => {
+        if (remoteIdOverride !== activeRemoteIdRef.current) {
+          return;
+        }
+        console.info("[nomi-desktop] websocket error", {
+          remoteId: remoteIdOverride,
+          error,
+        });
+        dispatch({ type: "sidebar/reset" });
         dispatch({
           type: "connection/status",
           status: "error",
@@ -296,6 +665,15 @@ export function App() {
         });
       },
       onEvent: (event) => {
+        if (remoteIdOverride !== activeRemoteIdRef.current) {
+          return;
+        }
+        if (event.type === "ready" || event.type === "session_bound" || event.type === "error") {
+          console.info("[nomi-desktop] remote event", {
+            remoteId: remoteIdOverride,
+            event,
+          });
+        }
         if (event.type === "ready") {
           const activeSessionId = profileOverride.defaultSessionId;
           dispatch({
@@ -313,6 +691,7 @@ export function App() {
         }
         if (event.type === "session_bound") {
           const activeSessionId = event.session_id || profileOverride.defaultSessionId;
+          rememberSession(activeSessionId, remoteIdOverride);
           void clientRef.current.send({
             type: "load_history",
             session_id: activeSessionId,
@@ -326,7 +705,11 @@ export function App() {
             type: "get_sidebar",
             session_id: activeSessionId,
           });
+          void clientRef.current.send({
+            type: "list_providers" as never,
+          } as RemoteCommand);
         }
+        handleSessionProtocolEvent(event as SessionProtocolEvent, remoteIdOverride);
         dispatch({ type: "event/received", event });
       },
     });
@@ -357,7 +740,7 @@ export function App() {
     });
   }
 
-  async function createNewSession() {
+  async function createNewSession(title?: string) {
     if (state.ownerReady && state.sessionState.activeTurn && !state.sessionState.activeTurn.completed) {
       const interrupted = await interruptCurrentTurn();
       if (!interrupted) {
@@ -365,23 +748,22 @@ export function App() {
         return;
       }
     }
-
     const nextSessionId = createDesktopSessionId(state.profile.clientId);
-    const nextProfile = {
-      ...state.profile,
-      defaultSessionId: nextSessionId,
-      lastBoundSessionId: nextSessionId,
-    };
-    saveProfile(nextProfile);
-    setRemoteCatalog(loadRemoteCatalog());
-    dispatch({ type: "profile/update", profile: nextProfile });
-    dispatch({ type: "session/current", sessionId: nextSessionId });
-    dispatch({ type: "error/set", message: null });
-
-    if (state.ownerReady) {
-      await sendCommand({ type: "bind_session", session_id: nextSessionId });
-      fetchBoundSessionState(nextSessionId);
+    setSessionListState((current) => ({ ...current, creating: true, error: null }));
+    const ok = await sendCommand({
+      type: "create_session" as never,
+      session_id: nextSessionId,
+      title: title?.trim() || undefined,
+    } as RemoteCommand);
+    if (!ok) {
+      setSessionListState((current) => ({
+        ...current,
+        creating: false,
+        error: current.error || "会话创建请求失败。",
+      }));
+      return;
     }
+    await selectSession(nextSessionId);
   }
 
   async function interruptCurrentTurn() {
@@ -459,23 +841,136 @@ export function App() {
     sendMainMessage: async () => sendMessage(draftInput),
     setDraftInput,
   };
+  const shellActions = {
+    ...actions,
+    refreshRemoteSessions,
+    loadMoreRemoteSessions,
+    deleteRemoteSession: async (sessionId: string) => {
+      if (sessionId === state.currentSessionId) {
+        setSessionListState((current) => ({
+          ...current,
+          error: "当前正在绑定的会话不能删除。",
+        }));
+        return;
+      }
+      setSessionListState((current) => ({
+        ...current,
+        deletingSessionId: sessionId,
+        error: null,
+      }));
+      const ok = await sendCommand({
+        type: "delete_session" as never,
+        session_id: sessionId,
+      } as RemoteCommand);
+      if (!ok) {
+        setSessionListState((current) => ({
+          ...current,
+          deletingSessionId: null,
+          error: current.error || "会话删除请求失败。",
+        }));
+      }
+    },
+    refreshProviderState,
+    setProviderSettings,
+    setActiveProvider,
+    reloadRuntime,
+  };
 
-  async function selectRemote(remoteId: string) {
-    const target = remoteCatalog.remotes.find((entry) => entry.id === remoteId);
+  async function activateRemote(remoteId: string) {
+    const target = remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteId);
     if (!target) {
-      return;
+      return null;
     }
     const nextCatalog = {
-      ...remoteCatalog,
+      ...remoteCatalogRef.current,
       activeRemoteId: remoteId,
     };
     persistRemoteCatalog(nextCatalog);
     dispatch({ type: "profile/update", profile: target.profile });
     dispatch({ type: "session/current", sessionId: target.profile.defaultSessionId });
+    dispatch({ type: "sidebar/reset" });
     dispatch({ type: "error/set", message: null });
+    return target;
+  }
+
+  async function selectRemote(remoteId: string) {
+    const target = await activateRemote(remoteId);
+    if (!target) {
+      return;
+    }
+    await clientRef.current.disconnect();
     if (hasConnectableProfile(target.profile)) {
-      await clientRef.current.disconnect();
-      connect(target.profile);
+      connect(target.profile, remoteId);
+    } else {
+      dispatch({
+        type: "connection/status",
+        status: "disconnected",
+        detail: "连接已断开",
+        reason: "closed",
+        readyReceived: false,
+        bindCompleted: false,
+      });
+    }
+  }
+
+  async function connectRemote(remoteId: string) {
+    await selectRemote(remoteId);
+  }
+
+  function disconnectRemote() {
+    disconnect();
+  }
+
+  async function reconnectRemote(remoteId: string) {
+    const target = await activateRemote(remoteId);
+    if (!target) {
+      return;
+    }
+    await clientRef.current.disconnect();
+    if (hasConnectableProfile(target.profile)) {
+      connect(target.profile, remoteId);
+      return;
+    }
+    dispatch({
+      type: "connection/status",
+      status: "disconnected",
+      detail: "连接已断开",
+      reason: "closed",
+      readyReceived: false,
+      bindCompleted: false,
+    });
+  }
+
+  async function selectSession(sessionId: string) {
+    const trimmedSessionId = sessionId.trim();
+    if (!trimmedSessionId || trimmedSessionId === state.currentSessionId) {
+      return;
+    }
+    const nextProfile = {
+      ...state.profile,
+      defaultSessionId: trimmedSessionId,
+      lastBoundSessionId: trimmedSessionId,
+    };
+    const nextCatalog = registerRemoteSession(
+      upsertRemoteEntry(remoteCatalog, {
+        id: remoteCatalog.activeRemoteId,
+        name:
+          remoteCatalog.remotes.find((entry) => entry.id === remoteCatalog.activeRemoteId)?.name || "远端",
+        profile: nextProfile,
+        sessionIds:
+          remoteCatalog.remotes.find((entry) => entry.id === remoteCatalog.activeRemoteId)?.sessionIds || [],
+      }),
+      remoteCatalog.activeRemoteId,
+      trimmedSessionId,
+    );
+    persistRemoteCatalog(nextCatalog);
+    dispatch({ type: "profile/update", profile: nextProfile });
+    dispatch({ type: "session/current", sessionId: trimmedSessionId });
+    dispatch({ type: "sidebar/reset" });
+    dispatch({ type: "error/set", message: null });
+    if (state.ownerReady) {
+      await sendCommand({ type: "bind_session", session_id: trimmedSessionId });
+      fetchBoundSessionState(trimmedSessionId);
     }
   }
 
@@ -489,7 +984,7 @@ export function App() {
     const existing = entry.id
       ? remoteCatalog.remotes.find((item) => item.id === entry.id)
       : null;
-    const profile: ConnectionProfile = existing
+    const profile: DesktopConnectionProfile = existing
       ? {
           ...existing.profile,
           host: entry.host.trim(),
@@ -504,6 +999,7 @@ export function App() {
           defaultSessionId: "",
           lastBoundSessionId: "",
           themePreference: state.profile.themePreference,
+          accentColor: state.profile.accentColor || DEFAULT_ACCENT_COLOR,
         };
     const nextProfile =
       existing && existing.profile.clientId
@@ -533,31 +1029,53 @@ export function App() {
     if (activatesRemote) {
       dispatch({ type: "profile/update", profile: nextProfile });
       dispatch({ type: "session/current", sessionId: nextProfile.defaultSessionId });
-      if (hasConnectableProfile(nextProfile)) {
-        void clientRef.current.disconnect().then(() => {
-          connect(nextProfile);
+      dispatch({ type: "sidebar/reset" });
+      void clientRef.current.disconnect().then(() => {
+        if (hasConnectableProfile(nextProfile)) {
+          connect(nextProfile, nextCatalog.activeRemoteId);
+          return;
+        }
+        dispatch({
+          type: "connection/status",
+          status: "disconnected",
+          detail: "连接已断开",
+          reason: "closed",
+          readyReceived: false,
+          bindCompleted: false,
         });
-      }
+      });
     }
   }
 
   async function deleteRemote(remoteId: string) {
-    const removedActive = remoteCatalog.activeRemoteId === remoteId;
-    const nextCatalog = deleteRemoteEntry(remoteCatalog, remoteId);
+    const removedActive = remoteCatalogRef.current.activeRemoteId === remoteId;
+    const nextCatalog = deleteRemoteEntry(remoteCatalogRef.current, remoteId);
     persistRemoteCatalog(nextCatalog);
     const nextActive = nextCatalog.remotes.find((entry) => entry.id === nextCatalog.activeRemoteId)!;
     dispatch({ type: "profile/update", profile: nextActive.profile });
     dispatch({ type: "session/current", sessionId: nextActive.profile.defaultSessionId });
-    if (removedActive && hasConnectableProfile(nextActive.profile)) {
+    dispatch({ type: "sidebar/reset" });
+    if (removedActive) {
       await clientRef.current.disconnect();
-      connect(nextActive.profile);
+      if (hasConnectableProfile(nextActive.profile)) {
+        connect(nextActive.profile, nextActive.id);
+      } else {
+        dispatch({
+          type: "connection/status",
+          status: "disconnected",
+          detail: "连接已断开",
+          reason: "closed",
+          readyReceived: false,
+          bindCompleted: false,
+        });
+      }
     }
   }
 
   return (
     <MainShell
       state={state}
-      actions={actions}
+      actions={shellActions}
       draftInput={draftInput}
       composerPhase={composerPhase}
       sidebarCollapsed={sidebarCollapsed}
@@ -567,7 +1085,11 @@ export function App() {
       setPreviewThemePreference={setPreviewThemePreference}
       remoteEntries={remoteCatalog.remotes}
       activeRemoteId={remoteCatalog.activeRemoteId}
-      selectRemote={(remoteId) => void selectRemote(remoteId)}
+      sessionListState={sessionListState}
+      connectRemote={(remoteId) => void connectRemote(remoteId)}
+      reconnectRemote={(remoteId) => void reconnectRemote(remoteId)}
+      disconnectRemote={disconnectRemote}
+      selectSession={(sessionId) => void selectSession(sessionId)}
       saveRemote={saveRemoteEntryDraft}
       deleteRemote={(remoteId) => void deleteRemote(remoteId)}
     />

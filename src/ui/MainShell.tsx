@@ -10,13 +10,17 @@ import {
 } from "react";
 
 import type {
-  ConnectionProfile,
   DesktopActions,
+  DesktopConnectionProfile,
+  ProviderCatalogItem,
+  ProviderStateItem,
   SidebarMcpItem,
   SidebarTaskItem,
   ThemePreference,
 } from "../lib/types";
 import type { DesktopRemoteEntry } from "../lib/store";
+import type { RemoteSessionListState } from "../lib/remoteSessions";
+import { ACCENT_PRESETS, DEFAULT_ACCENT_COLOR } from "../lib/themeAccent";
 import type { DesktopAppState } from "../state/reducer";
 import {
   buildThreadDisplayItems,
@@ -31,7 +35,21 @@ import { parseMcpInstallJson } from "./mcpJson";
 
 interface MainShellProps {
   state: DesktopAppState;
-  actions: DesktopActions;
+  actions: DesktopActions & {
+    refreshRemoteSessions(): Promise<void>;
+    loadMoreRemoteSessions(): Promise<void>;
+    deleteRemoteSession(sessionId: string): Promise<void>;
+    refreshProviderState(): Promise<void>;
+    setProviderSettings(input: {
+      provider: string;
+      apiKey?: string | null;
+      apiBase?: string | null;
+      model?: string | null;
+      clearApiKey?: boolean | null;
+    }): Promise<boolean>;
+    setActiveProvider(input: { provider: string; model?: string | null }): Promise<boolean>;
+    reloadRuntime(): Promise<boolean>;
+  };
   draftInput: string;
   composerPhase: "idle" | "interrupting" | "sending";
   sidebarCollapsed: boolean;
@@ -39,7 +57,11 @@ interface MainShellProps {
   setPreviewThemePreference(value: ThemePreference | null): void;
   remoteEntries: DesktopRemoteEntry[];
   activeRemoteId: string;
-  selectRemote(remoteId: string): void;
+  sessionListState: RemoteSessionListState;
+  connectRemote(remoteId: string): void;
+  reconnectRemote(remoteId: string): void;
+  disconnectRemote(): void;
+  selectSession(sessionId: string): void;
   saveRemote(input: {
     id?: string;
     name: string;
@@ -49,12 +71,13 @@ interface MainShellProps {
   }): void;
   deleteRemote(remoteId: string): void;
   toggleSidebar(): void;
-  updateProfile(patch: Partial<ConnectionProfile>): void;
+  updateProfile(patch: Partial<DesktopConnectionProfile>): void;
 }
 
 interface SidebarDisclosureProps {
   title: string;
   count: number;
+  action?: ReactNode;
   children: ReactNode;
 }
 
@@ -62,6 +85,12 @@ interface SidebarTaskGroup {
   key: string;
   label: string;
   tasks: SidebarTaskItem[];
+}
+
+interface SessionChannelGroup {
+  key: string;
+  label: string;
+  items: RemoteSessionListState["items"];
 }
 
 type TaskFormMode = "create" | "edit";
@@ -105,6 +134,52 @@ interface RemoteFormState {
   host: string;
   port: string;
   token: string;
+}
+
+interface SkillFeedbackState {
+  tone: "error";
+  message: string;
+}
+
+interface TaskFeedbackState {
+  tone: "error";
+  message: string;
+}
+
+interface ProviderSettingsFeedbackState {
+  tone: "error" | "success";
+  message: string;
+}
+
+interface ModelSettingsProviderItem {
+  name: string;
+  display_name?: string | null;
+  backend?: string | null;
+  default_api_base?: string | null;
+  api_base_editable?: boolean;
+  is_gateway?: boolean;
+  is_local?: boolean;
+  is_direct?: boolean;
+  strip_model_prefix?: boolean;
+  supports_prompt_caching?: boolean;
+  builtin?: boolean;
+  editable?: boolean;
+  deletable?: boolean;
+  api_key_set?: boolean;
+  api_key_preview?: string | null;
+  saved_model?: string | null;
+  api_base?: string | null;
+  source?: string | null;
+}
+
+interface ModelSettingsProviderDraft {
+  apiBase: string;
+  apiKey: string;
+  model: string;
+}
+
+interface ModelSettingsFormState {
+  [providerName: string]: ModelSettingsProviderDraft;
 }
 
 function Icon(props: { name: string; className?: string }) {
@@ -159,6 +234,12 @@ function Icon(props: { name: string; className?: string }) {
         <circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none" />
         <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
         <circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      </>
+    ),
+    plus: (
+      <>
+        <path d="M12 4.5v15" {...common} strokeWidth={2.6} />
+        <path d="M4.5 12h15" {...common} strokeWidth={2.6} />
       </>
     ),
   };
@@ -222,9 +303,12 @@ function formatTaskSchedule(task: SidebarTaskItem): string {
   return task.scheduleKind || "未知调度";
 }
 
-function formatTaskStatus(task: SidebarTaskItem): string {
-  const enabled = task.enabled ? "启用中" : "已停用";
-  return `${enabled} · ${task.status || "pending"} · 已运行 ${task.runCount} 次`;
+function formatTaskCompactMeta(task: SidebarTaskItem): string {
+  const parts = [formatTaskSchedule(task), task.enabled ? "启用中" : "已停用", task.status || "pending"];
+  if (task.runCount > 0) {
+    parts.push(`已运行 ${task.runCount} 次`);
+  }
+  return parts.join(" · ");
 }
 
 function formatMcpSummary(item: SidebarMcpItem): string {
@@ -245,7 +329,7 @@ function formatSkillSummary(skillPath: string): string {
   if (segments.length === 0) {
     return "本地 Skill 包";
   }
-  return `位于 ${segments.slice(-2).join("/")}`;
+  return segments.slice(-2).join("/");
 }
 
 function formatTaskTime(task: SidebarTaskItem): string {
@@ -256,6 +340,48 @@ function formatTaskTime(task: SidebarTaskItem): string {
     return formatDateTime(task.scheduleAtMs);
   }
   return "未安排";
+}
+
+function formatSessionTimestamp(ms: number | null): string {
+  if (!ms) {
+    return "未知时间";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(ms));
+}
+
+function getSessionChannelKey(sessionId: string, source: string | null): string {
+  const sourceKey = (source || "").trim().toLowerCase();
+  if (sourceKey === "desktop" || sourceKey === "wechat" || sourceKey === "cron") {
+    return sourceKey;
+  }
+  const prefix = sessionId.split(":", 1)[0]?.trim().toLowerCase();
+  if (prefix === "desktop" || prefix === "wechat" || prefix === "cron") {
+    return prefix;
+  }
+  return "other";
+}
+
+function buildSessionChannelGroups(items: RemoteSessionListState["items"]): SessionChannelGroup[] {
+  const labels: Record<string, string> = {
+    desktop: "Desktop",
+    wechat: "微信",
+    cron: "Cron",
+    other: "其他",
+  };
+  const order = ["desktop", "wechat", "cron", "other"];
+  return order
+    .map((key) => ({
+      key,
+      label: labels[key],
+      items: items.filter((item) => getSessionChannelKey(item.sessionId, item.source) === key),
+    }))
+    .filter((group) => group.items.length > 0);
 }
 
 function getComposerStatusCopy(
@@ -311,24 +437,67 @@ function buildTaskGroups(tasks: SidebarTaskItem[]): SidebarTaskGroup[] {
   return groups;
 }
 
+function buildProviderCapabilityBadges(provider: {
+  is_gateway?: boolean;
+  is_local?: boolean;
+  is_direct?: boolean;
+  strip_model_prefix?: boolean;
+  supports_prompt_caching?: boolean;
+}): string[] {
+  const badges: string[] = [];
+  if (provider.is_gateway) {
+    badges.push("Gateway");
+  }
+  if (provider.is_local) {
+    badges.push("Local");
+  }
+  if (provider.is_direct) {
+    badges.push("Direct");
+  }
+  if (provider.strip_model_prefix) {
+    badges.push("Strip Prefix");
+  }
+  if (provider.supports_prompt_caching) {
+    badges.push("Prompt Cache");
+  }
+  return badges;
+}
+
+function getTaskInstructionSummary(task: SidebarTaskItem): string | null {
+  const instruction = task.instruction.trim();
+  const title = (task.title || "").trim();
+  if (!instruction) {
+    return null;
+  }
+  if (title && title === instruction) {
+    return null;
+  }
+  return instruction;
+}
+
 function SidebarDisclosure(props: SidebarDisclosureProps) {
-  const { title, count, children } = props;
+  const { title, count, action, children } = props;
   const [open, setOpen] = useState(false);
 
   return (
     <section className={`sidebar-disclosure ${open ? "open" : ""}`}>
-      <button
-        className="sidebar-disclosure-toggle"
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="sidebar-disclosure-main">
-          <span className="sidebar-disclosure-title">{title}</span>
-          <span className="sidebar-disclosure-count">{count}</span>
-        </span>
-        <Icon name="chevron-down" className="sidebar-disclosure-icon" />
-      </button>
+      <div className="sidebar-disclosure-toggle">
+        <button
+          className="sidebar-disclosure-toggle-button"
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="sidebar-disclosure-main">
+            <span className="sidebar-disclosure-title">{title}</span>
+            <span className="sidebar-disclosure-meta">
+              <span className="sidebar-disclosure-count">{count}</span>
+              <Icon name="chevron-down" className="sidebar-disclosure-icon" />
+            </span>
+          </span>
+        </button>
+        {action ? <div className="sidebar-disclosure-action">{action}</div> : null}
+      </div>
       <div className="sidebar-disclosure-panel">
         <div className="sidebar-disclosure-inner">{children}</div>
       </div>
@@ -336,16 +505,82 @@ function SidebarDisclosure(props: SidebarDisclosureProps) {
   );
 }
 
+function SidebarMoreMenu(props: {
+  ariaLabel?: string;
+  items: Array<{
+    label: string;
+    danger?: boolean;
+    disabled?: boolean;
+    onClick(): void;
+  }>;
+}) {
+  const { ariaLabel = "更多操作", items } = props;
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={menuRef} className={`sidebar-more-menu${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="sidebar-inline-button secondary sidebar-more-trigger"
+        aria-label={ariaLabel}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Icon name="more-horizontal" />
+      </button>
+      {open ? (
+        <div className="sidebar-more-menu-panel" role="menu">
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              className={`sidebar-more-menu-item${item.danger ? " danger" : ""}`}
+              disabled={item.disabled}
+              onClick={() => {
+                item.onClick();
+                setOpen(false);
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ActionModal(props: {
   title: string;
   onClose(): void;
   children: ReactNode;
+  visualState?: "open" | "closing";
+  dialogClassName?: string;
 }) {
-  const { title, onClose, children } = props;
+  const { title, onClose, children, visualState = "open", dialogClassName } = props;
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
+    <div
+      className={`overlay-backdrop ${visualState === "closing" ? "closing" : "open"}`}
+      role="presentation"
+      onClick={onClose}
+    >
       <div
-        className="overlay-dialog"
+        className={`overlay-dialog ${visualState === "closing" ? "closing" : "open"}${dialogClassName ? ` ${dialogClassName}` : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -423,6 +658,13 @@ function buildRemoteFormState(entry?: DesktopRemoteEntry): RemoteFormState {
   };
 }
 
+function shortenSessionId(sessionId: string): string {
+  if (sessionId.length <= 52) {
+    return sessionId;
+  }
+  return `${sessionId.slice(0, 34)}...${sessionId.slice(-12)}`;
+}
+
 export function MainShell(props: MainShellProps) {
   const {
     state,
@@ -434,7 +676,11 @@ export function MainShell(props: MainShellProps) {
     setPreviewThemePreference,
     remoteEntries,
     activeRemoteId,
-    selectRemote,
+    sessionListState,
+    connectRemote,
+    reconnectRemote,
+    disconnectRemote,
+    selectSession,
     saveRemote,
     deleteRemote,
     toggleSidebar,
@@ -463,16 +709,128 @@ export function MainShell(props: MainShellProps) {
   const [mcpModal, setMcpModal] = useState<McpFormState | null>(null);
   const [mcpFormError, setMcpFormError] = useState<string | null>(null);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const [sessionManagerOpen, setSessionManagerOpen] = useState(false);
+  const [sessionManagerRendered, setSessionManagerRendered] = useState(false);
+  const [sessionManagerClosing, setSessionManagerClosing] = useState(false);
+  const [sessionManagerVisible, setSessionManagerVisible] = useState(false);
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+  const [modelSettingsRendered, setModelSettingsRendered] = useState(false);
+  const [modelSettingsClosing, setModelSettingsClosing] = useState(false);
+  const [modelSettingsVisible, setModelSettingsVisible] = useState(false);
+  const [modelApiBases, setModelApiBases] = useState<ModelSettingsFormState>({});
+  const [selectedModelProviderName, setSelectedModelProviderName] = useState<string | null>(null);
   const [themeSliderDragValue, setThemeSliderDragValue] = useState<number | null>(null);
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
+  const [taskFeedback, setTaskFeedback] = useState<TaskFeedbackState | null>(null);
+  const [pendingSkillName, setPendingSkillName] = useState<string | null>(null);
+  const [skillFeedback, setSkillFeedback] = useState<SkillFeedbackState | null>(null);
+  const [providerSettingsBusyProvider, setProviderSettingsBusyProvider] = useState<string | null>(null);
+  const [providerActivationBusyProvider, setProviderActivationBusyProvider] = useState<string | null>(null);
+  const [providerReloading, setProviderReloading] = useState(false);
+  const [providerSettingsFeedback, setProviderSettingsFeedback] =
+    useState<ProviderSettingsFeedbackState | null>(null);
+  const processedTaskFeedbackRef = useRef<string | null>(null);
+  const processedSkillFeedbackRef = useRef<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement | null>(null);
   const themeSliderRef = useRef<HTMLDivElement | null>(null);
   const themeSliderDragValueRef = useRef<number | null>(null);
   const composerStatusCopy = getComposerStatusCopy(state, composerPhase);
+  const activeRemote = remoteEntries.find((entry) => entry.id === activeRemoteId) || remoteEntries[0] || null;
   const sendDisabled = draftInput.trim().length === 0 || !state.ownerReady || composerPhase !== "idle";
   const resourceActionsDisabled =
     !state.ownerReady ||
     (state.sessionState.activeTurn !== null && !state.sessionState.activeTurn.completed);
+  const sessionChannelGroups = useMemo(
+    () => buildSessionChannelGroups(sessionListState.items),
+    [sessionListState.items],
+  );
+  const providerCatalogItems = useMemo(() => state.providerCatalog?.providers || [], [state.providerCatalog]);
+  const providerCatalogByName = useMemo(
+    () =>
+      providerCatalogItems.reduce<Record<string, ProviderCatalogItem>>((acc, item) => {
+        acc[item.name] = item;
+        return acc;
+      }, {}),
+    [providerCatalogItems],
+  );
+  const providerStateItems = useMemo(() => state.providerState?.providers || [], [state.providerState]);
+  const providerStateByName = useMemo(
+    () =>
+      providerStateItems.reduce<Record<string, ProviderStateItem>>((acc, item) => {
+        acc[item.provider] = item;
+        return acc;
+      }, {}),
+    [providerStateItems],
+  );
+  const providerManagementItems = useMemo<ModelSettingsProviderItem[]>(() => {
+    if (providerStateItems.length > 0) {
+      return providerStateItems.map((item) => {
+        const catalogItem = providerCatalogByName[item.provider];
+        return {
+          ...catalogItem,
+          ...item,
+          name: item.provider,
+          display_name: item.display_name || catalogItem?.display_name || item.provider,
+          backend: item.backend || catalogItem?.backend || "",
+          api_base_editable: item.api_base_editable ?? catalogItem?.api_base_editable ?? false,
+          default_api_base: item.default_api_base ?? catalogItem?.default_api_base ?? null,
+        };
+      });
+    }
+    return providerCatalogItems.map((item) => ({
+      ...item,
+      name: item.name,
+      display_name: item.display_name || item.name,
+      backend: item.backend,
+      api_base_editable: item.api_base_editable,
+      default_api_base: item.default_api_base,
+      api_key_set: false,
+      saved_model: null,
+      api_base: item.default_api_base || null,
+    }));
+  }, [providerCatalogByName, providerCatalogItems, providerStateItems]);
+  const activeProviderSelection = state.providerState?.active || null;
+  const selectedProvider =
+    providerManagementItems.find((provider) => provider.name === selectedModelProviderName) ||
+    providerManagementItems[0] ||
+    null;
+  const selectedProviderState = selectedProvider ? providerStateByName[selectedProvider.name] || null : null;
+  const selectedProviderDraft = selectedProvider
+    ? modelApiBases[selectedProvider.name] || {
+        apiBase: selectedProviderState?.api_base || selectedProvider.default_api_base || "",
+        apiKey: "",
+        model:
+          selectedProviderState?.saved_model ||
+          (activeProviderSelection?.provider === selectedProvider.name ? activeProviderSelection.model : "") ||
+          "",
+      }
+    : null;
+  const selectedProviderIsActivating =
+    Boolean(selectedProvider) && providerActivationBusyProvider === selectedProvider.name;
+  const selectedProviderIsSaving =
+    Boolean(selectedProvider) && providerSettingsBusyProvider === selectedProvider.name;
+  const providerActionBusy =
+    selectedProviderIsSaving || selectedProviderIsActivating || providerReloading;
+
+  function updateSelectedProviderDraft(
+    field: keyof ModelSettingsProviderDraft,
+    value: string,
+  ) {
+    if (!selectedProvider) {
+      return;
+    }
+    setModelApiBases((current) => ({
+      ...current,
+      [selectedProvider.name]: {
+        ...current[selectedProvider.name],
+        apiBase: current[selectedProvider.name]?.apiBase ?? selectedProvider.default_api_base ?? "",
+        apiKey: current[selectedProvider.name]?.apiKey ?? "",
+        model: current[selectedProvider.name]?.model ?? "",
+        [field]: value,
+      },
+    }));
+  }
 
   useEffect(() => {
     const textarea = composerRef.current;
@@ -499,8 +857,311 @@ export function MainShell(props: MainShellProps) {
   }, [settingsMenuOpen]);
 
   useEffect(() => {
+    if (!sessionManagerRendered) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeSessionManager();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [sessionManagerRendered]);
+
+  useEffect(() => {
+    if (sessionManagerOpen) {
+      setSessionManagerRendered(true);
+      setSessionManagerClosing(false);
+      let nestedFrame = 0;
+      const frame = window.requestAnimationFrame(() => {
+        nestedFrame = window.requestAnimationFrame(() => {
+          setSessionManagerVisible(true);
+        });
+      });
+      return () => {
+        window.cancelAnimationFrame(frame);
+        if (nestedFrame) {
+          window.cancelAnimationFrame(nestedFrame);
+        }
+      };
+    }
+    setSessionManagerVisible(false);
+    if (!sessionManagerRendered) {
+      return;
+    }
+    setSessionManagerClosing(true);
+    const timer = window.setTimeout(() => {
+      setSessionManagerRendered(false);
+      setSessionManagerClosing(false);
+    }, 220);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [sessionManagerOpen, sessionManagerRendered]);
+
+  useEffect(() => {
+    if (!modelSettingsRendered) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeModelSettings();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [modelSettingsRendered]);
+
+  useEffect(() => {
+    if (modelSettingsOpen) {
+      setModelSettingsRendered(true);
+      setModelSettingsClosing(false);
+      let nestedFrame = 0;
+      const frame = window.requestAnimationFrame(() => {
+        nestedFrame = window.requestAnimationFrame(() => {
+          setModelSettingsVisible(true);
+        });
+      });
+      return () => {
+        window.cancelAnimationFrame(frame);
+        if (nestedFrame) {
+          window.cancelAnimationFrame(nestedFrame);
+        }
+      };
+    }
+    setModelSettingsVisible(false);
+    if (!modelSettingsRendered) {
+      return;
+    }
+    setModelSettingsClosing(true);
+    const timer = window.setTimeout(() => {
+      setModelSettingsRendered(false);
+      setModelSettingsClosing(false);
+    }, 220);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [modelSettingsOpen, modelSettingsRendered]);
+
+  useEffect(() => {
+    const nextDrafts: ModelSettingsFormState = {};
+    for (const provider of providerManagementItems) {
+      const providerState = providerStateByName[provider.name];
+      nextDrafts[provider.name] = {
+        apiBase: providerState?.api_base || provider.default_api_base || "",
+        apiKey: "",
+        model:
+          providerState?.saved_model ||
+          (activeProviderSelection?.provider === provider.name ? activeProviderSelection.model : "") ||
+          "",
+      };
+    }
+    setModelApiBases(nextDrafts);
+    setSelectedModelProviderName((current) => {
+      if (current && providerManagementItems.some((provider) => provider.name === current)) {
+        return current;
+      }
+      return activeProviderSelection?.provider || providerManagementItems[0]?.name || null;
+    });
+  }, [providerManagementItems, providerStateByName, activeProviderSelection]);
+
+  useEffect(() => {
     themeSliderDragValueRef.current = themeSliderDragValue;
   }, [themeSliderDragValue]);
+
+  useEffect(() => {
+    setPendingTaskId(null);
+    setTaskFeedback(null);
+    setPendingSkillName(null);
+    setSkillFeedback(null);
+    setProviderSettingsBusyProvider(null);
+    setProviderActivationBusyProvider(null);
+    setProviderReloading(false);
+    setProviderSettingsFeedback(null);
+    processedTaskFeedbackRef.current = null;
+    processedSkillFeedbackRef.current = null;
+  }, [activeRemoteId, state.currentSessionId]);
+
+  useEffect(() => {
+    const latestProviderEvent = state.eventLog.find(
+      (event) =>
+        event.type === "provider_list" ||
+        event.type === "provider_settings_updated" ||
+        event.type === "provider_updated" ||
+        event.type === "active_provider_changed" ||
+        event.type === "runtime_reloaded" ||
+        (event.type === "error" &&
+          (event.command === "update_provider" ||
+            event.command === "set_provider_settings" ||
+            event.command === "set_active_provider" ||
+            event.command === "reload_runtime")),
+    );
+    if (!latestProviderEvent) {
+      return;
+    }
+    const triggerAutoReload = (message: string, failureMessage: string) => {
+      setProviderReloading(true);
+      setProviderSettingsFeedback({
+        tone: "success",
+        message,
+      });
+      void actions.reloadRuntime().then((ok) => {
+        if (!ok) {
+          setProviderReloading(false);
+          setProviderSettingsFeedback({
+            tone: "error",
+            message: failureMessage,
+          });
+        }
+      });
+    };
+    if (latestProviderEvent.type === "provider_list") {
+      return;
+    }
+    if (latestProviderEvent.type === "provider_settings_updated") {
+      setProviderSettingsBusyProvider(null);
+      if (latestProviderEvent.requires_runtime_reload) {
+        triggerAutoReload(
+          "Provider 设置已保存，正在自动 Reload Runtime…",
+          "Provider 设置已保存，但自动 Reload Runtime 失败。",
+        );
+        return;
+      }
+      setProviderSettingsFeedback({
+        tone: "success",
+        message: "Provider 设置已保存。",
+      });
+      return;
+    }
+    if (latestProviderEvent.type === "provider_updated") {
+      setProviderSettingsBusyProvider(null);
+      if (latestProviderEvent.requires_runtime_reload) {
+        triggerAutoReload(
+          "Provider 设置已保存，正在自动 Reload Runtime…",
+          "Provider 设置已保存，但自动 Reload Runtime 失败。",
+        );
+        return;
+      }
+      setProviderSettingsFeedback({
+        tone: "success",
+        message: "Provider 设置已保存。",
+      });
+      return;
+    }
+    if (latestProviderEvent.type === "active_provider_changed") {
+      setProviderActivationBusyProvider(null);
+      if (latestProviderEvent.requires_runtime_reload) {
+        triggerAutoReload(
+          "当前模型已切换，正在自动 Reload Runtime…",
+          "当前模型已切换，但自动 Reload Runtime 失败。",
+        );
+        return;
+      }
+      setProviderSettingsFeedback({
+        tone: "success",
+        message: "当前模型已切换。",
+      });
+      return;
+    }
+    if (latestProviderEvent.type === "runtime_reloaded") {
+      setProviderReloading(false);
+      setProviderSettingsFeedback({ tone: "success", message: "Runtime 已重新加载。" });
+      return;
+    }
+    setProviderSettingsBusyProvider(null);
+    setProviderActivationBusyProvider(null);
+    setProviderReloading(false);
+    const fieldMessage =
+      latestProviderEvent.fields && latestProviderEvent.fields.length > 0
+        ? latestProviderEvent.fields.map((field) => `${field.field}: ${field.message}`).join("；")
+        : "";
+    setProviderSettingsFeedback({
+      tone: "error",
+      message:
+        latestProviderEvent.code === "runtime_reload_busy"
+          ? "当前有进行中的对话，暂时不能 Reload Runtime。"
+          :
+        fieldMessage ||
+        (typeof latestProviderEvent.message === "string" && latestProviderEvent.message.trim().length > 0
+          ? latestProviderEvent.message
+          : "Provider 设置操作失败。"),
+    });
+  }, [state.eventLog]);
+
+  useEffect(() => {
+    const latestTaskEvent = state.eventLog.find(
+      (event) =>
+        event.type === "resource_action_result" &&
+        event.resource === "task" &&
+        event.action === "delete" &&
+        event.session_id === state.currentSessionId,
+    );
+    if (!latestTaskEvent) {
+      return;
+    }
+    const feedbackKey = [
+      latestTaskEvent.session_id || "",
+      latestTaskEvent.task_id || "",
+      latestTaskEvent.ok ? "ok" : "error",
+      typeof latestTaskEvent.message === "string" ? latestTaskEvent.message : "",
+    ].join("::");
+    if (processedTaskFeedbackRef.current === feedbackKey) {
+      return;
+    }
+    processedTaskFeedbackRef.current = feedbackKey;
+    setPendingTaskId(null);
+    if (latestTaskEvent.ok) {
+      setTaskFeedback(null);
+      return;
+    }
+    setTaskFeedback({
+      tone: "error",
+      message:
+        typeof latestTaskEvent.message === "string" && latestTaskEvent.message.trim().length > 0
+          ? latestTaskEvent.message
+          : "任务删除失败。",
+    });
+  }, [state.currentSessionId, state.eventLog]);
+
+  useEffect(() => {
+    const latestSkillEvent = state.eventLog.find(
+      (event) =>
+        event.type === "resource_action_result" &&
+        event.resource === "skill" &&
+        event.action === "uninstall" &&
+        event.session_id === state.currentSessionId,
+    );
+    if (!latestSkillEvent) {
+      return;
+    }
+    const feedbackKey = [
+      latestSkillEvent.session_id || "",
+      latestSkillEvent.skill_name || "",
+      latestSkillEvent.ok ? "ok" : "error",
+      typeof latestSkillEvent.message === "string" ? latestSkillEvent.message : "",
+    ].join("::");
+    if (processedSkillFeedbackRef.current === feedbackKey) {
+      return;
+    }
+    processedSkillFeedbackRef.current = feedbackKey;
+    setPendingSkillName(null);
+    if (latestSkillEvent.ok) {
+      setSkillFeedback(null);
+      return;
+    }
+    setSkillFeedback({
+      tone: "error",
+      message:
+        typeof latestSkillEvent.message === "string" && latestSkillEvent.message.trim().length > 0
+          ? latestSkillEvent.message
+          : "Skill 卸载失败。",
+    });
+  }, [state.currentSessionId, state.eventLog]);
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) {
@@ -521,9 +1182,90 @@ export function MainShell(props: MainShellProps) {
     }));
   }
 
+  function openSessionManager() {
+    void actions.refreshRemoteSessions();
+    setSessionManagerOpen(true);
+  }
+
+  function closeSessionManager() {
+    setSessionManagerOpen(false);
+  }
+
+  function openModelSettings() {
+    void actions.refreshProviderState();
+    setModelSettingsOpen(true);
+  }
+
+  function closeModelSettings() {
+    setModelSettingsOpen(false);
+  }
+
+  async function handleSaveProviderSettings() {
+    if (!selectedProvider || !selectedProviderDraft) {
+      return;
+    }
+    setProviderSettingsFeedback(null);
+    setProviderSettingsBusyProvider(selectedProvider.name);
+    const ok = await actions.setProviderSettings({
+      provider: selectedProvider.name,
+      apiKey: selectedProviderDraft.apiKey.trim() || null,
+      apiBase: selectedProvider.api_base_editable ? selectedProviderDraft.apiBase.trim() || null : null,
+      model: selectedProviderDraft.model.trim() || null,
+      clearApiKey: false,
+    });
+    if (!ok) {
+      setProviderSettingsBusyProvider(null);
+    }
+  }
+
+  async function handleClearProviderApiKey() {
+    if (!selectedProvider) {
+      return;
+    }
+    setProviderSettingsFeedback(null);
+    setProviderSettingsBusyProvider(selectedProvider.name);
+    const ok = await actions.setProviderSettings({
+      provider: selectedProvider.name,
+      clearApiKey: true,
+    });
+    if (!ok) {
+      setProviderSettingsBusyProvider(null);
+      return;
+    }
+    updateSelectedProviderDraft("apiKey", "");
+  }
+
+  async function handleSetActiveProvider() {
+    if (!selectedProvider || !selectedProviderDraft) {
+      return;
+    }
+    setProviderSettingsFeedback(null);
+    setProviderActivationBusyProvider(selectedProvider.name);
+    const ok = await actions.setActiveProvider({
+      provider: selectedProvider.name,
+      model: selectedProviderDraft.model.trim() || null,
+    });
+    if (!ok) {
+      setProviderActivationBusyProvider(null);
+    }
+  }
+
+  async function handleReloadRuntime() {
+    setProviderSettingsFeedback(null);
+    setProviderReloading(true);
+    const ok = await actions.reloadRuntime();
+    if (!ok) {
+      setProviderReloading(false);
+    }
+  }
+
   function updateThemePreference(themePreference: ThemePreference) {
     setPreviewThemePreference(null);
     updateProfile({ themePreference });
+  }
+
+  function updateAccentColor(accentColor: string) {
+    updateProfile({ accentColor });
   }
 
   function getThemeSliderValue(): number {
@@ -761,14 +1503,20 @@ export function MainShell(props: MainShellProps) {
   }
 
   async function handleTaskDelete(task: SidebarTaskItem) {
-    if (!window.confirm(`确认删除任务“${task.title || task.id}”吗？`)) {
-      return;
-    }
-    await actions.sendResourceCommand({
+    setPendingTaskId(task.id);
+    setTaskFeedback(null);
+    const ok = await actions.sendResourceCommand({
       type: "task_delete",
       session_id: state.currentSessionId,
       task_id: task.id,
     });
+    if (!ok) {
+      setPendingTaskId(null);
+      setTaskFeedback({
+        tone: "error",
+        message: `任务删除请求未发出：${task.title || task.id}`,
+      });
+    }
   }
 
   async function submitSkillInstall() {
@@ -802,14 +1550,20 @@ export function MainShell(props: MainShellProps) {
   }
 
   async function handleSkillUninstall(name: string) {
-    if (!window.confirm(`确认卸载 Skill “${name}”吗？`)) {
-      return;
-    }
-    await actions.sendResourceCommand({
+    setPendingSkillName(name);
+    setSkillFeedback(null);
+    const ok = await actions.sendResourceCommand({
       type: "skill_uninstall",
       session_id: state.currentSessionId,
       skill_name: name,
     });
+    if (!ok) {
+      setPendingSkillName(null);
+      setSkillFeedback({
+        tone: "error",
+        message: `Skill 卸载请求未发出：${name}`,
+      });
+    }
   }
 
   async function submitMcpModal() {
@@ -917,19 +1671,26 @@ export function MainShell(props: MainShellProps) {
         </section>
 
         <section className="sidebar-section">
-          <SidebarDisclosure title="远端" count={remoteEntries.length}>
-            <div className="sidebar-section-actions">
+          <SidebarDisclosure
+            title="远端"
+            count={remoteEntries.length}
+            action={(
               <button
                 type="button"
-                className="sidebar-inline-button"
+                className="sidebar-inline-button secondary sidebar-disclosure-action-button"
+                aria-label="新建远端"
                 onClick={openCreateRemoteModal}
               >
-                新建远端
+                <span className="sidebar-disclosure-action-label">新建</span>
+                <Icon name="plus" className="sidebar-disclosure-action-icon" />
               </button>
-            </div>
+            )}
+          >
             <div className="sidebar-entity-list">
               {remoteEntries.map((entry) => {
                 const isActive = entry.id === activeRemoteId;
+                const showConnectedActions = isActive && state.connectionStatus === "connected";
+                const showConnectingActions = isActive && state.connectionStatus === "connecting";
                 return (
                   <article key={entry.id} className="sidebar-entity-card compact">
                     <div className="sidebar-entity-title-row">
@@ -941,38 +1702,59 @@ export function MainShell(props: MainShellProps) {
                     <div className="sidebar-entity-primary">
                       {entry.profile.host}:{entry.profile.port}
                     </div>
-                    <div className="sidebar-entity-meta">
-                      {entry.profile.token ? "已配置 token" : "未配置 token"}
-                    </div>
+                      <div className="sidebar-entity-meta">
+                        {entry.profile.token ? "已配置 token" : "未配置 token"}
+                      </div>
                     <div className="sidebar-card-actions">
-                      <button
-                        type="button"
-                        className="sidebar-inline-button secondary"
-                        onClick={() => selectRemote(entry.id)}
-                        disabled={isActive}
-                      >
-                        {isActive ? "当前远端" : "切换"}
-                      </button>
-                      <button
-                        type="button"
-                        className="sidebar-inline-button secondary"
-                        onClick={() => openEditRemoteModal(entry)}
-                      >
-                        编辑
-                      </button>
-                      <button
-                        type="button"
-                        className="sidebar-inline-button danger"
-                        onClick={() => {
-                          if (!window.confirm(`确认删除远端“${entry.name}”吗？`)) {
-                            return;
-                          }
-                          deleteRemote(entry.id);
-                        }}
-                        disabled={remoteEntries.length <= 1}
-                      >
-                        删除
-                      </button>
+                      {isActive ? (
+                        <>
+                          <button
+                            type="button"
+                            className="sidebar-inline-button"
+                            onClick={
+                              showConnectedActions ? disconnectRemote : () => connectRemote(entry.id)
+                            }
+                            disabled={showConnectingActions}
+                          >
+                            {showConnectingActions ? "连接中..." : showConnectedActions ? "断开" : "连接"}
+                          </button>
+                          <button
+                            type="button"
+                            className="sidebar-inline-button secondary"
+                            onClick={() => reconnectRemote(entry.id)}
+                            disabled={showConnectingActions}
+                          >
+                            重连
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="sidebar-inline-button"
+                          onClick={() => connectRemote(entry.id)}
+                        >
+                          连接
+                        </button>
+                      )}
+                      <SidebarMoreMenu
+                        items={[
+                          {
+                            label: "编辑",
+                            onClick: () => openEditRemoteModal(entry),
+                          },
+                          {
+                            label: "删除",
+                            danger: true,
+                            disabled: remoteEntries.length <= 1,
+                            onClick: () => {
+                              if (!window.confirm(`确认删除远端“${entry.name}”吗？`)) {
+                                return;
+                              }
+                              deleteRemote(entry.id);
+                            },
+                          },
+                        ]}
+                      />
                     </div>
                   </article>
                 );
@@ -982,26 +1764,28 @@ export function MainShell(props: MainShellProps) {
         </section>
 
         <section className="sidebar-section">
-          <SidebarDisclosure title="定时任务" count={state.sidebar.tasks.length}>
-            <div className="sidebar-section-actions">
+          <SidebarDisclosure
+            title="任务"
+            count={state.sidebar.tasks.length}
+            action={(
               <button
                 type="button"
-                className="sidebar-inline-button"
+                className="sidebar-inline-button secondary sidebar-disclosure-action-button"
+                aria-label="新建任务"
                 onClick={openCreateTaskModal}
                 disabled={resourceActionsDisabled}
               >
-                新建任务
+                <span className="sidebar-disclosure-action-label">新建</span>
+                <Icon name="plus" className="sidebar-disclosure-action-icon" />
               </button>
-              <button
-                type="button"
-                className="sidebar-inline-button secondary"
-                onClick={() => void actions.refreshSidebar()}
-              >
-                刷新
-              </button>
-            </div>
+            )}
+          >
             {state.sidebar.tasks.length === 0
-              ? renderEmptyState("当前远端还没有可显示的自动任务。")
+              ? renderEmptyState(
+                state.ownerReady && state.sidebarReady
+                  ? "当前远端还没有可显示的自动任务。"
+                  : "等待当前 remote 同步任务列表。",
+              )
               : (
                 <div className="sidebar-task-groups">
                   {taskGroups.map((group) => (
@@ -1011,106 +1795,142 @@ export function MainShell(props: MainShellProps) {
                         <span>{group.tasks.length}</span>
                       </div>
                       <div className="sidebar-entity-list">
-                        {group.tasks.map((task) => (
-                          <article key={task.id} className="sidebar-entity-card">
-                            <div className="sidebar-entity-title-row">
-                              <div className="sidebar-entity-title">{task.title || task.id}</div>
-                              <span className={`sidebar-badge ${task.enabled ? "success" : "muted"}`}>
-                                {task.enabled ? "启用" : "停用"}
-                              </span>
-                            </div>
-                            <div className="sidebar-entity-primary">下次执行 · {formatTaskTime(task)}</div>
-                            <div className="sidebar-entity-meta">{formatTaskSchedule(task)}</div>
-                            <div className="sidebar-entity-meta">{formatTaskStatus(task)}</div>
-                            <div className="sidebar-entity-copy compact">{task.instruction}</div>
-                            <div className="sidebar-card-actions">
-                              <button
-                                type="button"
-                                className="sidebar-inline-button secondary"
-                                onClick={() => openEditTaskModal(task)}
-                                disabled={resourceActionsDisabled}
-                              >
-                                编辑
-                              </button>
-                              <button
-                                type="button"
-                                className="sidebar-inline-button secondary"
-                                onClick={() => void handleTaskToggle(task)}
-                                disabled={resourceActionsDisabled}
-                              >
-                                {task.enabled ? "停用" : "启用"}
-                              </button>
-                              <button
-                                type="button"
-                                className="sidebar-inline-button danger"
-                                onClick={() => void handleTaskDelete(task)}
-                                disabled={resourceActionsDisabled}
-                              >
-                                删除
-                              </button>
-                            </div>
-                          </article>
-                        ))}
+                        {group.tasks.map((task) => {
+                          const taskInstructionSummary = getTaskInstructionSummary(task);
+                          return (
+                            <article key={task.id} className="sidebar-entity-card">
+                              <div className="sidebar-entity-title-row">
+                                <div className="sidebar-entity-title">{task.title || task.id}</div>
+                                <span className={`sidebar-badge ${task.enabled ? "success" : "muted"}`}>
+                                  {task.enabled ? "启用" : "停用"}
+                                </span>
+                              </div>
+                              <div className="sidebar-entity-primary">下次执行 · {formatTaskTime(task)}</div>
+                              <div className="sidebar-entity-meta">{formatTaskCompactMeta(task)}</div>
+                              {taskInstructionSummary ? (
+                                <div className="sidebar-entity-copy compact">{taskInstructionSummary}</div>
+                              ) : null}
+                              <div className="sidebar-card-actions">
+                                <button
+                                  type="button"
+                                  className="sidebar-inline-button secondary"
+                                  onClick={() => openEditTaskModal(task)}
+                                  disabled={resourceActionsDisabled}
+                                >
+                                  编辑
+                                </button>
+                                <button
+                                  type="button"
+                                  className="sidebar-inline-button secondary"
+                                  onClick={() => void handleTaskToggle(task)}
+                                  disabled={resourceActionsDisabled}
+                                >
+                                  {task.enabled ? "停用" : "启用"}
+                                </button>
+                                {pendingTaskId === task.id ? (
+                                  <button
+                                    type="button"
+                                    className="sidebar-inline-button secondary"
+                                    disabled
+                                  >
+                                    删除中...
+                                  </button>
+                                ) : (
+                                  <SidebarMoreMenu
+                                    items={[
+                                      {
+                                        label: "删除",
+                                        danger: true,
+                                        disabled: resourceActionsDisabled || pendingTaskId !== null,
+                                        onClick: () => {
+                                          void handleTaskDelete(task);
+                                        },
+                                      },
+                                    ]}
+                                  />
+                                )}
+                              </div>
+                            </article>
+                          );
+                        })}
                       </div>
                     </section>
                   ))}
                 </div>
               )}
+            {taskFeedback ? <div className="sidebar-inline-feedback error">{taskFeedback.message}</div> : null}
           </SidebarDisclosure>
         </section>
 
         <section className="sidebar-section">
-          <SidebarDisclosure title="已安装 Skills" count={state.sidebar.skills.length}>
-            <div className="sidebar-section-actions">
+          <SidebarDisclosure
+            title="Skills"
+            count={state.sidebar.skills.length}
+            action={(
               <button
                 type="button"
-                className="sidebar-inline-button"
+                className="sidebar-inline-button secondary sidebar-disclosure-action-button"
+                aria-label="安装 Skill"
                 onClick={openSkillInstallModal}
                 disabled={resourceActionsDisabled}
               >
-                安装 Skill
+                <span className="sidebar-disclosure-action-label">安装</span>
+                <Icon name="plus" className="sidebar-disclosure-action-icon" />
               </button>
-            </div>
+            )}
+          >
             <div className="sidebar-entity-list">
               {state.sidebar.skills.length === 0
-                ? renderEmptyState("当前远端 skills 目录还是空的。")
+                ? renderEmptyState(
+                  state.ownerReady && state.sidebarReady
+                    ? "当前远端 skills 目录还是空的。"
+                    : "等待当前 remote 同步 Skills。",
+                )
                 : state.sidebar.skills.map((skill) => (
                   <article key={skill.path} className="sidebar-entity-card compact">
                     <div className="sidebar-entity-title-row">
                       <div className="sidebar-entity-title">{skill.name}</div>
-                    </div>
-                    <div className="sidebar-entity-meta">{formatSkillSummary(skill.path)}</div>
-                    <div className="sidebar-card-actions">
                       <button
                         type="button"
                         className="sidebar-inline-button danger"
                         onClick={() => void handleSkillUninstall(skill.name)}
-                        disabled={resourceActionsDisabled}
+                        disabled={resourceActionsDisabled || pendingSkillName !== null}
                       >
-                        卸载
+                        {pendingSkillName === skill.name ? "卸载中..." : "卸载"}
                       </button>
                     </div>
+                    <div className="sidebar-entity-meta">{formatSkillSummary(skill.path)}</div>
                   </article>
                 ))}
             </div>
+            {skillFeedback ? <div className="sidebar-inline-feedback error">{skillFeedback.message}</div> : null}
           </SidebarDisclosure>
         </section>
 
         <section className="sidebar-section">
-          <SidebarDisclosure title="MCP" count={state.sidebar.mcpServers.length}>
-            <div className="sidebar-section-actions">
+          <SidebarDisclosure
+            title="MCP"
+            count={state.sidebar.mcpServers.length}
+            action={(
               <button
                 type="button"
-                className="sidebar-inline-button"
+                className="sidebar-inline-button secondary sidebar-disclosure-action-button"
+                aria-label="新建 MCP"
                 onClick={openCreateMcpModal}
                 disabled={resourceActionsDisabled}
               >
-                新建 MCP
+                <span className="sidebar-disclosure-action-label">新建</span>
+                <Icon name="plus" className="sidebar-disclosure-action-icon" />
               </button>
-            </div>
+            )}
+          >
             <div className="sidebar-entity-list">
               {state.sidebar.mcpServers.length === 0
-                ? renderEmptyState("当前远端配置里还没有 MCP server。")
+                ? renderEmptyState(
+                  state.ownerReady && state.sidebarReady
+                    ? "当前远端配置里还没有 MCP server。"
+                    : "等待当前 remote 同步 MCP。",
+                )
                 : state.sidebar.mcpServers.map((item) => (
                   <article key={item.name} className="sidebar-entity-card compact">
                     <div className="sidebar-entity-title-row">
@@ -1120,7 +1940,6 @@ export function MainShell(props: MainShellProps) {
                       </span>
                     </div>
                     <div className="sidebar-entity-meta">{formatMcpSummary(item)}</div>
-                    <div className="sidebar-entity-meta">{item.transport}</div>
                     <div className="sidebar-card-actions">
                       <button
                         type="button"
@@ -1138,14 +1957,18 @@ export function MainShell(props: MainShellProps) {
                       >
                         {item.enabled ? "停用" : "启用"}
                       </button>
-                      <button
-                        type="button"
-                        className="sidebar-inline-button danger"
-                        onClick={() => void handleMcpDelete(item)}
-                        disabled={resourceActionsDisabled}
-                      >
-                        删除
-                      </button>
+                      <SidebarMoreMenu
+                        items={[
+                          {
+                            label: "删除",
+                            danger: true,
+                            disabled: resourceActionsDisabled,
+                            onClick: () => {
+                              void handleMcpDelete(item);
+                            },
+                          },
+                        ]}
+                      />
                     </div>
                   </article>
                 ))}
@@ -1226,12 +2049,31 @@ export function MainShell(props: MainShellProps) {
             <div className={`settings-prototype-popover${settingsMenuOpen ? " open" : ""}`}>
               <div className="settings-prototype-title">设置</div>
               <div className="settings-prototype-body">
+                <button
+                  type="button"
+                  className="settings-menu-button"
+                  onClick={() => {
+                    setSettingsMenuOpen(false);
+                    openModelSettings();
+                  }}
+                >
+                  <span>模型设置</span>
+                  <span className="settings-menu-button-meta">待接入</span>
+                </button>
+                <button
+                  type="button"
+                  className="settings-menu-button"
+                  onClick={() => {
+                    setSettingsMenuOpen(false);
+                    openSessionManager();
+                  }}
+                >
+                  <span>会话管理</span>
+                  <span className="settings-menu-button-meta">
+                    {sessionListState.totalCount ?? sessionListState.items.length}
+                  </span>
+                </button>
                 <div className="settings-slider-block">
-                  <div className="settings-slider-labels">
-                    <span>浅色</span>
-                    <span>跟随系统</span>
-                    <span>深色</span>
-                  </div>
                   <div
                     ref={themeSliderRef}
                     className="settings-theme-slider"
@@ -1245,11 +2087,50 @@ export function MainShell(props: MainShellProps) {
                     onPointerUp={handleThemeSliderPointerUp}
                     onPointerCancel={handleThemeSliderPointerCancel}
                   >
+                    <div className="settings-theme-slider-segments" aria-hidden="true">
+                      <span className="settings-theme-slider-segment">浅色</span>
+                      <span className="settings-theme-slider-segment">跟随系统</span>
+                      <span className="settings-theme-slider-segment">深色</span>
+                    </div>
                     <div className="settings-theme-slider-track" />
                     <div
                       className="settings-theme-slider-thumb"
-                      style={{ left: `calc(18px + ${themeSliderRatio} * (100% - 36px))` }}
+                      style={{ left: `calc(16px + ${themeSliderRatio} * (100% - 32px))` }}
                     />
+                  </div>
+                </div>
+                <div className="settings-accent-block">
+                  <div className="settings-accent-header">
+                    <span>主题色</span>
+                    <span className="settings-accent-value">
+                      {(state.profile.accentColor || DEFAULT_ACCENT_COLOR).toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="settings-accent-grid">
+                    {ACCENT_PRESETS.map((preset) => {
+                      const active =
+                        (state.profile.accentColor || DEFAULT_ACCENT_COLOR).toLowerCase() ===
+                        preset.color.toLowerCase();
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          className={`settings-accent-swatch${active ? " active" : ""}`}
+                          aria-label={`切换主题色到${preset.label}`}
+                          title={preset.label}
+                          onClick={() => updateAccentColor(preset.color)}
+                          style={{ "--swatch-color": preset.color } as JSX.IntrinsicElements["button"]["style"]}
+                        />
+                      );
+                    })}
+                    <label className="settings-accent-custom" title="自定义主题色">
+                      <input
+                        type="color"
+                        value={state.profile.accentColor || DEFAULT_ACCENT_COLOR}
+                        aria-label="自定义主题色"
+                        onChange={(event) => updateAccentColor(event.target.value)}
+                      />
+                    </label>
                   </div>
                 </div>
               </div>
@@ -1304,6 +2185,7 @@ export function MainShell(props: MainShellProps) {
               const isAssistant = message.kind === "assistant";
               const isUser = message.kind === "user";
               const isTask = message.kind === "task";
+              const showAvatar = isAssistant;
               return (
                 <article
                   key={item.key}
@@ -1316,11 +2198,14 @@ export function MainShell(props: MainShellProps) {
                     isTask ? "is-task" : "",
                   ].filter(Boolean).join(" ")}
                 >
-                  {isAssistant || isTask ? (
-                    <div className="message-avatar">{isTask ? "!" : "N"}</div>
-                  ) : null}
+                  {showAvatar ? <div className="message-avatar">N</div> : null}
                   <div className="message-body">
-                    {isTask ? <div className="message-kicker">{presentation.label}</div> : null}
+                    {isTask ? (
+                      <div className="message-system-head">
+                        <span className="message-kicker">{presentation.label}</span>
+                        <span className="message-system-status">{presentation.statusLabel}</span>
+                      </div>
+                    ) : null}
                     <div className={`message-surface ${isAssistant ? "plain" : ""}`}>
                       <AnimatedMessageContent
                         content={message.content}
@@ -1361,6 +2246,296 @@ export function MainShell(props: MainShellProps) {
           </div>
         </footer>
       </main>
+
+      {sessionManagerRendered ? (
+        <ActionModal
+          title="会话管理"
+          onClose={closeSessionManager}
+          visualState={sessionManagerClosing ? "closing" : sessionManagerVisible ? "open" : "closing"}
+          dialogClassName="session-manager-dialog"
+        >
+          <div className="session-manager-panel model-settings-shell">
+            <div className="session-manager-copy">
+              这里展示当前远端保存的全部会话，默认按创建时间从近到远排序。
+            </div>
+            {sessionListState.error ? <div className="overlay-error">{sessionListState.error}</div> : null}
+            <div className="session-manager-list">
+              {sessionListState.loading && sessionListState.items.length === 0 ? (
+                <div className="sidebar-empty-state">正在加载会话列表...</div>
+              ) : null}
+              {!sessionListState.loading && sessionListState.items.length === 0 ? (
+                <div className="sidebar-empty-state">当前远端还没有历史会话。</div>
+              ) : null}
+              {sessionChannelGroups.map((group) => (
+                <section key={group.key} className="session-manager-group">
+                  <div className="session-manager-group-header">
+                    <span>{group.label}</span>
+                    <span>{group.items.length}</span>
+                  </div>
+                  <div className="session-manager-group-list">
+                    {group.items.map((session) => {
+                      const isActive = session.sessionId === state.currentSessionId;
+                      return (
+                        <div
+                          key={session.sessionId}
+                          className={`session-manager-item${isActive ? " active" : ""}`}
+                        >
+                          <button
+                            type="button"
+                            className="session-manager-select"
+                            onClick={() => {
+                              void selectSession(session.sessionId);
+                              closeSessionManager();
+                            }}
+                          >
+                            <div className="session-manager-item-row compact">
+                              <div className="session-manager-item-title mono">
+                                {shortenSessionId(session.sessionId)}
+                              </div>
+                              <div className="session-manager-item-badges">
+                                {isActive ? <span className="session-manager-badge active">当前</span> : null}
+                              </div>
+                            </div>
+                            <div className="session-manager-item-meta">
+                              更新于 {formatSessionTimestamp(session.updatedAtMs || session.createdAtMs)} ·{" "}
+                              {typeof session.messageCount === "number" ? `${session.messageCount} 条消息` : "消息数未知"}
+                            </div>
+                          </button>
+                          <div className="session-manager-row-actions">
+                            <button
+                              type="button"
+                              className="sidebar-inline-button danger"
+                              disabled={isActive || sessionListState.deletingSessionId === session.sessionId}
+                              onClick={() => {
+                                if (!window.confirm(`确认删除会话“${session.sessionId}”吗？`)) {
+                                  return;
+                                }
+                                void actions.deleteRemoteSession(session.sessionId);
+                              }}
+                            >
+                              {sessionListState.deletingSessionId === session.sessionId ? "删除中..." : "删除"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+            <div className="session-manager-actions">
+              <button
+                className="sidebar-inline-button"
+                type="button"
+                onClick={() => {
+                  closeSessionManager();
+                  void actions.createNewSession();
+                }}
+                disabled={sessionListState.creating}
+              >
+                {sessionListState.creating ? "创建中..." : "新建会话"}
+              </button>
+              <button
+                className="sidebar-inline-button secondary"
+                type="button"
+                onClick={() => void actions.refreshRemoteSessions()}
+                disabled={sessionListState.loading}
+              >
+                刷新列表
+              </button>
+              {sessionListState.nextPageToken ? (
+                <button
+                  className="sidebar-inline-button secondary"
+                  type="button"
+                  onClick={() => void actions.loadMoreRemoteSessions()}
+                  disabled={sessionListState.loadingMore}
+                >
+                  {sessionListState.loadingMore ? "加载中..." : "加载更多"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </ActionModal>
+      ) : null}
+
+      {modelSettingsRendered ? (
+        <ActionModal
+          title="模型设置"
+          onClose={closeModelSettings}
+          visualState={modelSettingsClosing ? "closing" : modelSettingsVisible ? "open" : "closing"}
+          dialogClassName="session-manager-dialog model-settings-dialog"
+        >
+          <div className="session-manager-panel model-settings-shell">
+            {providerManagementItems.length === 0 ? (
+              <div className="sidebar-empty-state">当前 remote 还没有返回 provider 列表。</div>
+            ) : (
+              <div className="model-settings-layout">
+                <div className="model-settings-provider-panel">
+                  <div className="model-settings-provider-list">
+                    {providerManagementItems.map((provider) => {
+                      const active = provider.name === selectedProvider?.name;
+                      const isCurrentActive = activeProviderSelection?.provider === provider.name;
+                      return (
+                        <button
+                          key={provider.name}
+                          type="button"
+                          className={`model-settings-provider-chip${active ? " active" : ""}`}
+                          onClick={() => setSelectedModelProviderName(provider.name)}
+                        >
+                          <span className="model-settings-provider-chip-copy">
+                            <span className="model-settings-provider-chip-title">
+                              {provider.display_name || provider.name}
+                            </span>
+                            <span className="model-settings-provider-chip-meta">
+                              {provider.name}
+                            </span>
+                          </span>
+                          <span className={`session-manager-badge${isCurrentActive ? " active" : ""}`}>
+                            {isCurrentActive ? "当前" : provider.api_base_editable ? "可编辑" : "只读"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {selectedProvider && selectedProviderDraft ? (
+                  <div className="model-settings-detail-panel">
+                    <article className="model-settings-card">
+                      <div className="model-settings-card-header">
+                        <div className="model-settings-card-copy">
+                          <div className="model-settings-card-title">
+                            {selectedProvider.display_name || selectedProvider.name}
+                          </div>
+                          <div className="model-settings-card-subtitle">
+                            {selectedProvider.name} · {selectedProvider.backend}
+                          </div>
+                        </div>
+                        <span className="session-manager-badge">
+                          {activeProviderSelection?.provider === selectedProvider.name ? "当前生效" : "未生效"}
+                        </span>
+                      </div>
+                      <div className="model-settings-badges">
+                        {buildProviderCapabilityBadges(selectedProvider).map((badge) => (
+                          <span key={badge} className="sidebar-badge muted">
+                            {badge}
+                          </span>
+                        ))}
+                      </div>
+                      {selectedProviderState?.api_key_set ? (
+                        <div className="overlay-hint">
+                          已保存的 apiKey：{selectedProviderState.api_key_preview || "已设置"}
+                        </div>
+                      ) : null}
+                      <label className="model-settings-field">
+                        <span className="model-settings-field-label">apiKey</span>
+                        <input
+                          type="password"
+                          value={selectedProviderDraft.apiKey}
+                          onChange={(event) => updateSelectedProviderDraft("apiKey", event.target.value)}
+                          placeholder="请输入 apiKey"
+                        />
+                      </label>
+                      {selectedProviderState?.api_key_set ? (
+                        <div className="model-settings-actions compact">
+                          <button
+                            className="sidebar-inline-button secondary"
+                            type="button"
+                            onClick={() => void handleClearProviderApiKey()}
+                            disabled={providerActionBusy}
+                          >
+                            {selectedProviderIsSaving ? "处理中..." : "清空已保存 apiKey"}
+                          </button>
+                        </div>
+                      ) : null}
+                      <label className="model-settings-field">
+                        <span className="model-settings-field-label">model</span>
+                        <input
+                          type="text"
+                          value={selectedProviderDraft.model}
+                          onChange={(event) => updateSelectedProviderDraft("model", event.target.value)}
+                          placeholder="例如 gpt-4.1 / deepseek-chat"
+                        />
+                      </label>
+                      <label className="model-settings-field">
+                        <span className="model-settings-field-label">apiBase</span>
+                        <input
+                          type="text"
+                          value={selectedProviderDraft.apiBase || selectedProvider.default_api_base || ""}
+                          onChange={(event) => updateSelectedProviderDraft("apiBase", event.target.value)}
+                          readOnly={!selectedProvider.api_base_editable}
+                          disabled={!selectedProvider.api_base_editable}
+                        />
+                      </label>
+                      <div className="overlay-hint">
+                        {selectedProvider.api_base_editable
+                          ? "当前 provider 允许编辑 apiBase。"
+                          : selectedProvider.default_api_base
+                            ? `该 provider 由 core 固定 apiBase：${selectedProvider.default_api_base}`
+                            : "该 provider 不允许在 desktop 侧修改 apiBase。"}
+                      </div>
+                      <div className="overlay-hint">
+                        当前生效：{activeProviderSelection?.provider || "未设置"}
+                        {activeProviderSelection?.model ? ` / ${activeProviderSelection.model}` : ""}
+                        {state.providerState?.apply_mode === "reload_runtime"
+                          ? " · 修改后需要 reload runtime 才会完整生效。"
+                          : ""}
+                      </div>
+                      {providerSettingsFeedback ? (
+                        <div
+                          className={
+                            providerSettingsFeedback.tone === "error" ? "overlay-error" : "overlay-hint"
+                          }
+                        >
+                          {providerSettingsFeedback.message}
+                        </div>
+                      ) : null}
+                      <div className="model-settings-actions">
+                        <button
+                          className="sidebar-inline-button"
+                          type="button"
+                          onClick={() => void handleSaveProviderSettings()}
+                          disabled={providerActionBusy}
+                        >
+                          {selectedProviderIsSaving
+                            ? "保存中..."
+                            : providerReloading
+                              ? "应用中..."
+                              : "保存设置"}
+                        </button>
+                        <button
+                          className="sidebar-inline-button secondary"
+                          type="button"
+                          onClick={() => void handleSetActiveProvider()}
+                          disabled={selectedProviderIsActivating || providerReloading || resourceActionsDisabled}
+                        >
+                          {selectedProviderIsActivating || providerReloading
+                            ? "应用中..."
+                            : "设为当前模型"}
+                        </button>
+                        <button
+                          className="sidebar-inline-button secondary"
+                          type="button"
+                          onClick={() => void actions.refreshProviderState()}
+                        >
+                          刷新状态
+                        </button>
+                        <button
+                          className="sidebar-inline-button secondary"
+                          type="button"
+                          onClick={() => void handleReloadRuntime()}
+                          disabled={providerReloading || resourceActionsDisabled}
+                        >
+                          {providerReloading ? "Reload 中..." : "Reload Runtime"}
+                        </button>
+                      </div>
+                    </article>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </ActionModal>
+      ) : null}
 
       {taskModal ? (
         <ActionModal

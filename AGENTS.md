@@ -117,6 +117,15 @@ Protocol change flow is fixed as:
    - core owner updates `nomi-core`
    - desktop upgrades the protocol dependency and adapts consumption
 
+Protocol development and release workflow is fixed as:
+
+1. The protocol change first lands locally in `nomi-protocol`.
+2. During active development, both `nomi-core` and `nomi-desktop` must temporarily point to the same local `nomi-protocol` checkout for integration testing.
+3. Do not mix local protocol edits with old GitHub tag-based testing during active development.
+4. Only after `nomi-core` and `nomi-desktop` both pass local integration against that same local protocol checkout do we push `nomi-protocol` and cut a new tag.
+5. After the new tag exists, both repos must switch dependencies back to the GitHub tag and run one more verification pass.
+6. Final completion must be validated against the published GitHub tag, not only local path-based wiring.
+
 ## When Core Requests Desktop Changes
 
 Desktop should ask for clarification before implementation if any of these are ambiguous:

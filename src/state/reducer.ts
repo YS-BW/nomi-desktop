@@ -2,10 +2,13 @@ import { createMessageId } from "../lib/ids";
 import type {
   ActiveTurn,
   ConnectionReason,
-  ConnectionProfile,
+  DesktopConnectionProfile,
   DesktopSidebarData,
   DesktopSessionState,
   MessageItem,
+  ProviderCatalog,
+  ProviderStateItem,
+  ProviderStateSnapshot,
   RemoteEvent,
 } from "../lib/types";
 
@@ -16,16 +19,19 @@ export interface DesktopAppState {
   ownerReady: boolean;
   readyReceived: boolean;
   bindCompleted: boolean;
-  profile: ConnectionProfile;
+  profile: DesktopConnectionProfile;
   currentSessionId: string;
   sessionState: DesktopSessionState;
+  providerCatalog: ProviderCatalog | null;
+  providerState: ProviderStateSnapshot | null;
   sidebar: DesktopSidebarData;
+  sidebarReady: boolean;
   eventLog: RemoteEvent[];
   errorText: string | null;
 }
 
 export type DesktopAction =
-  | { type: "profile/update"; profile: ConnectionProfile }
+  | { type: "profile/update"; profile: DesktopConnectionProfile }
   | {
       type: "connection/status";
       status: DesktopAppState["connectionStatus"];
@@ -36,6 +42,7 @@ export type DesktopAction =
     }
   | { type: "session/current"; sessionId: string }
   | { type: "sidebar/data"; data: DesktopSidebarData }
+  | { type: "sidebar/reset" }
   | { type: "message/user"; sessionId: string; content: string }
   | { type: "event/received"; event: RemoteEvent }
   | { type: "error/set"; message: string | null };
@@ -62,7 +69,7 @@ function deriveOwnerReady(readyReceived: boolean, bindCompleted: boolean): boole
   return readyReceived && bindCompleted;
 }
 
-export function createInitialDesktopState(profile: ConnectionProfile): DesktopAppState {
+export function createInitialDesktopState(profile: DesktopConnectionProfile): DesktopAppState {
   const sessionId = profile.defaultSessionId;
   return {
     connectionStatus: "disconnected",
@@ -74,7 +81,10 @@ export function createInitialDesktopState(profile: ConnectionProfile): DesktopAp
     profile,
     currentSessionId: sessionId,
     sessionState: createSessionState(sessionId),
+    providerCatalog: null,
+    providerState: null,
     sidebar: createSidebarState(),
+    sidebarReady: false,
     eventLog: [],
     errorText: null,
   };
@@ -116,6 +126,16 @@ function appendEventLog(state: DesktopAppState, event: RemoteEvent): void {
   state.eventLog = [event, ...state.eventLog].slice(0, 30);
 }
 
+function mergeProviderItem(
+  current: ProviderStateItem,
+  patch: ProviderStateItem,
+): ProviderStateItem {
+  return {
+    ...current,
+    ...patch,
+  };
+}
+
 function isMessageKind(value: unknown): value is MessageItem["kind"] {
   return (
     value === "user" ||
@@ -138,16 +158,50 @@ function isMessageStatus(value: unknown): value is MessageItem["status"] {
   );
 }
 
+function hasToolCalls(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function formatToolCallHint(message: Record<string, unknown>): string | null {
+  if (!hasToolCalls(message.tool_calls)) {
+    return null;
+  }
+  const toolNames = (message.tool_calls as Array<Record<string, unknown>>)
+    .map((toolCall) => {
+      const directName = typeof toolCall.name === "string" ? toolCall.name : null;
+      if (directName && directName.trim()) {
+        return directName.trim();
+      }
+      const functionName =
+        toolCall.function && typeof toolCall.function === "object"
+          ? (toolCall.function as Record<string, unknown>).name
+          : null;
+      return typeof functionName === "string" && functionName.trim() ? functionName.trim() : null;
+    })
+    .filter((name): name is string => Boolean(name));
+  if (toolNames.length === 0) {
+    return "正在调用工具";
+  }
+  return `正在调用 ${toolNames.join("、")}`;
+}
+
 function normalizeHistoryMessage(
   message: Record<string, unknown>,
   sessionId: string,
 ): MessageItem {
   const rawRole = typeof message.role === "string" ? message.role : "";
   const toolHint = message.tool_hint === true;
+  const rawContent = String(message.content || "");
+  const trimmedContent = rawContent.trim();
+  const toolCallHint = formatToolCallHint(message);
   let kind: MessageItem["kind"] = "system";
 
   if (isMessageKind(message.kind)) {
     kind = message.kind;
+  } else if (rawRole === "tool") {
+    kind = "progress";
+  } else if (rawRole === "assistant" && toolCallHint && trimmedContent.length === 0) {
+    kind = "progress";
   } else if (rawRole === "assistant") {
     kind = "assistant";
   } else if (rawRole === "user") {
@@ -162,6 +216,10 @@ function normalizeHistoryMessage(
     kind === "progress" && (rawRole === "tool_hint" || toolHint)
       ? "tool_hint"
       : rawRole || kind;
+  const content =
+    rawRole === "assistant" && kind === "progress" && toolCallHint
+      ? toolCallHint
+      : rawContent;
 
   return {
     id:
@@ -170,7 +228,7 @@ function normalizeHistoryMessage(
         : createMessageId(role || "history"),
     kind,
     role,
-    content: String(message.content || ""),
+    content,
     sessionId:
       typeof message.session_id === "string" && message.session_id.trim().length > 0
         ? message.session_id
@@ -191,11 +249,19 @@ function replaceHistory(
 
 export function desktopReducer(state: DesktopAppState, action: DesktopAction): DesktopAppState {
   if (action.type === "profile/update") {
-    return { ...state, profile: action.profile };
+    return {
+      ...state,
+      profile: action.profile,
+      providerCatalog: null,
+      providerState: null,
+      sidebar: createSidebarState(),
+      sidebarReady: false,
+    };
   }
   if (action.type === "connection/status") {
     const readyReceived = action.readyReceived ?? state.readyReceived;
     const bindCompleted = action.bindCompleted ?? state.bindCompleted;
+    const shouldResetSidebar = action.status !== "connected" || !deriveOwnerReady(readyReceived, bindCompleted);
     return {
       ...state,
       connectionStatus: action.status,
@@ -204,6 +270,10 @@ export function desktopReducer(state: DesktopAppState, action: DesktopAction): D
       readyReceived,
       bindCompleted,
       ownerReady: deriveOwnerReady(readyReceived, bindCompleted),
+      providerCatalog: action.status === "connected" || readyReceived ? state.providerCatalog : null,
+      providerState: action.status === "connected" || readyReceived ? state.providerState : null,
+      sidebar: shouldResetSidebar ? createSidebarState() : state.sidebar,
+      sidebarReady: shouldResetSidebar ? false : state.sidebarReady,
       errorText: action.status === "error" ? action.detail : null,
     };
   }
@@ -214,12 +284,24 @@ export function desktopReducer(state: DesktopAppState, action: DesktopAction): D
       bindCompleted: false,
       ownerReady: deriveOwnerReady(state.readyReceived, false),
       sessionState: createSessionState(action.sessionId),
+      providerCatalog: state.providerCatalog,
+      providerState: state.providerState,
+      sidebar: createSidebarState(),
+      sidebarReady: false,
     };
   }
   if (action.type === "sidebar/data") {
     return {
       ...state,
       sidebar: action.data,
+      sidebarReady: true,
+    };
+  }
+  if (action.type === "sidebar/reset") {
+    return {
+      ...state,
+      sidebar: createSidebarState(),
+      sidebarReady: false,
     };
   }
   if (action.type === "message/user") {
@@ -276,6 +358,8 @@ export function desktopReducer(state: DesktopAppState, action: DesktopAction): D
       nextState.readyReceived = true;
       nextState.bindCompleted = false;
       nextState.ownerReady = false;
+      nextState.providerCatalog = event.provider_catalog || null;
+      nextState.providerState = event.provider_state || null;
       nextState.errorText = null;
       return nextState;
     case "session_bound":
@@ -285,6 +369,64 @@ export function desktopReducer(state: DesktopAppState, action: DesktopAction): D
       nextState.connectionReason = "idle";
       nextState.bindCompleted = true;
       nextState.ownerReady = deriveOwnerReady(nextState.readyReceived, nextState.bindCompleted);
+      return nextState;
+    case "provider_state_snapshot":
+      nextState.providerState = event.provider_state || null;
+      return nextState;
+    case "provider_list":
+      nextState.providerState = event.provider_list || null;
+      nextState.errorText = null;
+      return nextState;
+    case "provider_settings_updated":
+    case "provider_updated":
+      if (!nextState.providerState || !event.settings?.provider) {
+        return nextState;
+      }
+      if (!nextState.providerState.providers.some((item) => item.provider === event.settings?.provider)) {
+        nextState.providerState = {
+          ...nextState.providerState,
+          providers: [...nextState.providerState.providers, event.settings],
+        };
+        nextState.errorText = null;
+        return nextState;
+      }
+      nextState.providerState = {
+        ...nextState.providerState,
+        providers: nextState.providerState.providers.map((item) =>
+          item.provider === event.settings?.provider
+            ? mergeProviderItem(item, event.settings!)
+            : item,
+        ),
+      };
+      nextState.errorText = null;
+      return nextState;
+    case "active_provider_changed":
+      if (!event.active || !nextState.providerState) {
+        return nextState;
+      }
+      nextState.providerState = {
+        ...nextState.providerState,
+        active: event.active,
+        apply_mode: event.apply_mode || nextState.providerState.apply_mode,
+      };
+      nextState.errorText = null;
+      return nextState;
+    case "runtime_reloaded":
+      if (event.provider_state) {
+        nextState.providerState = event.provider_state;
+      } else if (nextState.providerState && event.apply_mode) {
+        nextState.providerState = {
+          ...nextState.providerState,
+          apply_mode: event.apply_mode,
+        };
+      }
+      if (event.active && nextState.providerState) {
+        nextState.providerState = {
+          ...nextState.providerState,
+          active: event.active,
+        };
+      }
+      nextState.errorText = null;
       return nextState;
     case "turn_started":
       ensureActiveTurn(nextState.sessionState, event.session_id || nextState.currentSessionId);
@@ -358,6 +500,7 @@ export function desktopReducer(state: DesktopAppState, action: DesktopAction): D
     case "sidebar_snapshot":
       if (event.sidebar) {
         nextState.sidebar = event.sidebar;
+        nextState.sidebarReady = true;
       }
       return nextState;
     case "resource_action_result":
