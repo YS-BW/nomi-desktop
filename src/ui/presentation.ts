@@ -27,8 +27,8 @@ function getConnectionStatusCopy(
   if (state.connectionStatus === "connecting") {
     if (state.readyReceived && !state.bindCompleted) {
       return {
-        label: "等待主窗口",
-        detail: "主窗口尚未完成当前会话绑定",
+        label: "已连接",
+        detail: "已连接 remote，等待你发送首条消息",
       };
     }
     return {
@@ -144,6 +144,9 @@ export function getComposerHint(
   >,
 ): string {
   if (!state.ownerReady) {
+    if (state.readyReceived && !state.bindCompleted && state.connectionStatus !== "error") {
+      return "当前还没有选中会话，发送首条消息时会自动创建。";
+    }
     return getConnectionStatusCopy(state).detail;
   }
   if (state.sessionState.activeTurn && !state.sessionState.activeTurn.completed) {

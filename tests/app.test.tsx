@@ -149,7 +149,7 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText("Nomi")).toBeInTheDocument();
+      expect(screen.getAllByText("Nomi").length).toBeGreaterThan(0);
     });
   });
 
@@ -247,6 +247,44 @@ describe("App", () => {
       expect(mockSend).toHaveBeenCalledWith({
         type: "get_sidebar",
         session_id: "desktop:test-client",
+      });
+    });
+  });
+
+  it("recovers automatically when the saved default session no longer exists on remote", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+    });
+
+    mockSend.mockClear();
+
+    connectCalls[0]?.callbacks.onEvent?.({
+      type: "error",
+      command: "bind_session",
+      code: "session_not_found",
+      session_id: "desktop:test-client",
+      message: "session missing",
+    });
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalledWith({
+        type: "create_session",
+        session_id: "desktop:test-client:session-uuid",
+      });
+    });
+
+    connectCalls[0]?.callbacks.onEvent?.({
+      type: "session_created",
+      session_id: "desktop:test-client:session-uuid",
+      created_at_ms: 1710000000000,
+    });
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalledWith({
+        type: "bind_session",
+        session_id: "desktop:test-client:session-uuid",
       });
     });
   });

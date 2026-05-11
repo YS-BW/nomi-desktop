@@ -51,7 +51,7 @@ Desktop must treat those as external dependencies and integration contracts, not
 
 When the user asks desktop to consult the core owner, use this Codex session id:
 
-- `019dca42-b13d-7d22-9051-e8934a80f75a`
+- `019e1646-cfd8-7a10-8360-4375c6122f27`
 
 ## Shared Contract Boundary
 
@@ -121,10 +121,13 @@ Protocol development and release workflow is fixed as:
 
 1. The protocol change first lands locally in `nomi-protocol`.
 2. During active development, both `nomi-core` and `nomi-desktop` must temporarily point to the same local `nomi-protocol` checkout for integration testing.
-3. Do not mix local protocol edits with old GitHub tag-based testing during active development.
-4. Only after `nomi-core` and `nomi-desktop` both pass local integration against that same local protocol checkout do we push `nomi-protocol` and cut a new tag.
-5. After the new tag exists, both repos must switch dependencies back to the GitHub tag and run one more verification pass.
-6. Final completion must be validated against the published GitHub tag, not only local path-based wiring.
+3. `nomi-protocol` is the single source of truth for remote protocol shape. Do not maintain long-lived desktop-local protocol mirror files under `src/protocol/*` as an alternative source of truth.
+4. During active development, desktop should use a direct local path dependency such as `file:/.../nomi-protocol`, and core should also develop against that same local `nomi-protocol` checkout rather than separate copies.
+5. Do not mix local protocol edits with old GitHub tag-based or stale npm-installed protocol testing during active development.
+6. Only after `nomi-core` and `nomi-desktop` both pass local integration against that same local protocol checkout do we publish a formal `nomi-protocol` release.
+7. Desktop production integration should ultimately depend on the npm registry package `nomi-protocol`, not remain pinned to `github:...#tag` long-term.
+8. GitHub tag dependencies are allowed only as a short-lived transition step when a formal npm package is not yet available.
+9. Final completion must be validated against the published protocol package, not only local path-based wiring.
 
 ## When Core Requests Desktop Changes
 

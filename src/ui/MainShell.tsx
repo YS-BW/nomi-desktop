@@ -224,6 +224,12 @@ function Icon(props: { name: string; className?: string }) {
         <path d="m5 12 7-7 7 7" {...common} />
       </>
     ),
+    send: (
+      <>
+        <path d="M12 18V7" {...common} strokeWidth={2.4} />
+        <path d="m7.5 11.5 4.5-4.5 4.5 4.5" {...common} strokeWidth={2.4} />
+      </>
+    ),
     "chevron-down": (
       <>
         <path d="m6 9 6 6 6-6" {...common} />
@@ -396,7 +402,9 @@ function getComposerStatusCopy(
   }
   if (!state.ownerReady) {
     if (state.connectionStatus === "connecting") {
-      return state.readyReceived ? "主窗口尚未完成会话绑定。" : "正在连接 remote，请稍等。";
+      return state.readyReceived
+        ? "当前还没有选中会话，发送首条消息时会自动创建。"
+        : "正在连接 remote，请稍等。";
     }
     if (state.connectionStatus === "error") {
       return state.connectionReason === "auth_error"
@@ -695,6 +703,12 @@ export function MainShell(props: MainShellProps) {
     () => buildThreadDisplayItems(state.sessionState.messages),
     [state.sessionState.messages],
   );
+  const hasMeaningfulMessages = state.sessionState.messages.some(
+    (message) => message.kind === "user" || message.kind === "assistant" || message.kind === "task",
+  );
+  const showHomePrototype =
+    !hasMeaningfulMessages &&
+    (!state.sessionState.activeTurn || state.sessionState.activeTurn.completed);
   const [expandedProcessKeys, setExpandedProcessKeys] = useState<Record<string, boolean>>({});
   const [taskModal, setTaskModal] = useState<TaskFormState | null>(null);
   const [taskFormError, setTaskFormError] = useState<string | null>(null);
@@ -732,6 +746,9 @@ export function MainShell(props: MainShellProps) {
   const processedTaskFeedbackRef = useRef<string | null>(null);
   const processedSkillFeedbackRef = useRef<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const threadScrollerRef = useRef<HTMLElement | null>(null);
+  const threadContentRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowThreadRef = useRef(true);
   const settingsMenuRef = useRef<HTMLDivElement | null>(null);
   const themeSliderRef = useRef<HTMLDivElement | null>(null);
   const themeSliderDragValueRef = useRef<number | null>(null);
@@ -840,6 +857,41 @@ export function MainShell(props: MainShellProps) {
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
   }, [draftInput]);
+
+  useEffect(() => {
+    const scroller = threadScrollerRef.current;
+    if (!scroller || showHomePrototype) {
+      return;
+    }
+    if (!shouldFollowThreadRef.current) {
+      return;
+    }
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [showHomePrototype, state.sessionState.messages, state.sessionState.activeTurn]);
+
+  useEffect(() => {
+    const scroller = threadScrollerRef.current;
+    const content = threadContentRef.current;
+    if (!scroller || !content || showHomePrototype || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      if (!shouldFollowThreadRef.current) {
+        return;
+      }
+      scroller.scrollTo({
+        top: scroller.scrollHeight,
+        behavior: "smooth",
+      });
+    });
+    observer.observe(content);
+    return () => {
+      observer.disconnect();
+    };
+  }, [showHomePrototype]);
 
   useEffect(() => {
     if (!settingsMenuOpen) {
@@ -1173,6 +1225,12 @@ export function MainShell(props: MainShellProps) {
     }
     event.preventDefault();
     void actions.sendMainMessage();
+  }
+
+  function handleThreadScroll(event: React.UIEvent<HTMLElement>) {
+    const target = event.currentTarget;
+    const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+    shouldFollowThreadRef.current = distanceFromBottom <= 80;
   }
 
   function toggleProcess(key: string) {
@@ -1656,7 +1714,13 @@ export function MainShell(props: MainShellProps) {
   }
 
   return (
-    <div className={`desktop-chat-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div
+      className={[
+        "desktop-chat-shell",
+        sidebarCollapsed ? "sidebar-collapsed" : "",
+        showHomePrototype ? "view-home" : "view-thread",
+      ].filter(Boolean).join(" ")}
+    >
       <aside className="desktop-sidebar">
         <section className="sidebar-section">
           <div className="sidebar-section-label">当前远端</div>
@@ -2138,8 +2202,23 @@ export function MainShell(props: MainShellProps) {
           </div>
         </header>
 
-        <section className="chat-thread-scroller">
-          <div className="chat-thread">
+        <section
+          ref={threadScrollerRef}
+          className={`chat-thread-scroller${showHomePrototype ? " home-mode" : ""}`}
+          onScroll={handleThreadScroll}
+        >
+          <div
+            ref={threadContentRef}
+            className={`chat-thread ${showHomePrototype ? "is-home" : "is-thread"}`}
+          >
+            {showHomePrototype ? (
+              <section className="home-prototype" aria-label="Nomi 首页原型">
+                <div className="home-prototype-hero">
+                  <h1 className="home-prototype-title">今天想聊点什么？</h1>
+                  <p className="home-prototype-copy">提问题，发图片，继续你的对话。</p>
+                </div>
+              </section>
+            ) : null}
             {threadItems.map((item) => {
               if (item.kind === "process") {
                 const expanded = Boolean(expandedProcessKeys[item.key]);
@@ -2240,7 +2319,7 @@ export function MainShell(props: MainShellProps) {
                 aria-label="发送消息"
                 disabled={sendDisabled}
               >
-                <Icon name="arrow-up" className="is-light" />
+                <Icon name="send" className="send-icon" />
               </button>
             </div>
           </div>

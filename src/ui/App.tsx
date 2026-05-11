@@ -122,6 +122,22 @@ function applyDocumentTheme(theme: ResolvedTheme, accentColor: string) {
     theme === "dark"
       ? mixHex(normalizedAccent, "#ffffff", 0.1)
       : mixHex(normalizedAccent, "#111827", 0.08);
+  const glassTintSoft =
+    theme === "dark"
+      ? rgbaFromHex(normalizedAccent, 0.05)
+      : rgbaFromHex(normalizedAccent, 0.08);
+  const glassTintStrong =
+    theme === "dark"
+      ? rgbaFromHex(normalizedAccent, 0.11)
+      : rgbaFromHex(normalizedAccent, 0.16);
+  const glassTintEdge =
+    theme === "dark"
+      ? rgbaFromHex(normalizedAccent, 0.18)
+      : rgbaFromHex(normalizedAccent, 0.22);
+  const glassTintLine =
+    theme === "dark"
+      ? rgbaFromHex(normalizedAccent, 0.08)
+      : rgbaFromHex(normalizedAccent, 0.1);
 
   root.dataset.theme = theme;
   root.style.colorScheme = theme;
@@ -131,6 +147,10 @@ function applyDocumentTheme(theme: ResolvedTheme, accentColor: string) {
   root.style.setProperty("--accent-soft-strong", accentSoftStrong);
   root.style.setProperty("--accent-border", accentBorder);
   root.style.setProperty("--accent-hover", accentHover);
+  root.style.setProperty("--glass-tint-soft", glassTintSoft);
+  root.style.setProperty("--glass-tint-strong", glassTintStrong);
+  root.style.setProperty("--glass-tint-edge", glassTintEdge);
+  root.style.setProperty("--glass-tint-line", glassTintLine);
   delete root.dataset.windowKind;
   delete document.body.dataset.windowKind;
 }
@@ -180,6 +200,18 @@ export function App() {
   const [sessionListState, setSessionListState] = useState(createEmptyRemoteSessionListState);
   const clientRef = useRef(new RemoteClient());
   const autoConnectDoneRef = useRef(false);
+  const sessionRecoveryRef = useRef<{
+    remoteId: string;
+    requestedSessionId: string | null;
+    recoverySessionId: string;
+    attempted: boolean;
+    reason: "missing_session" | "first_message";
+  } | null>(null);
+  const startupSessionScanRef = useRef<{
+    remoteId: string;
+    awaitingSelection: boolean;
+  } | null>(null);
+  const pendingInitialMessageRef = useRef<string | null>(null);
   const remoteCatalogRef = useRef(initialRemoteCatalog);
   const activeRemoteIdRef = useRef(initialRemoteCatalog.activeRemoteId);
   const sessionListStateRef = useRef(sessionListState);
@@ -405,6 +437,141 @@ export function App() {
     );
   }
 
+  function isDesktopSession(item: RemoteSessionItem): boolean {
+    const source = item.source?.trim().toLowerCase();
+    if (source === "desktop") {
+      return true;
+    }
+    return item.sessionId.trim().toLowerCase().startsWith("desktop:");
+  }
+
+  function pickLatestDesktopSession(items: RemoteSessionItem[]): RemoteSessionItem | null {
+    const desktopItems = items.filter(isDesktopSession);
+    if (desktopItems.length === 0) {
+      return null;
+    }
+    return [...desktopItems].sort((left, right) => {
+      const leftUpdated = left.updatedAtMs ?? 0;
+      const rightUpdated = right.updatedAtMs ?? 0;
+      if (leftUpdated !== rightUpdated) {
+        return rightUpdated - leftUpdated;
+      }
+      return left.sessionId.localeCompare(right.sessionId);
+    })[0] || null;
+  }
+
+  function persistProfileForRemote(
+    remoteId: string,
+    profile: DesktopConnectionProfile,
+    remoteName?: string,
+  ) {
+    persistRemoteCatalog(
+      upsertRemoteEntry(remoteCatalogRef.current, {
+        id: remoteId,
+        name:
+          remoteName ||
+          remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteId)?.name ||
+          "远端",
+        profile,
+        sessionIds:
+          remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteId)?.sessionIds || [],
+      }),
+    );
+  }
+
+  function rememberRecoveredSession(remoteId: string, sessionId: string) {
+    const nextProfile = {
+      ...state.profile,
+      defaultSessionId: sessionId,
+      lastBoundSessionId: sessionId,
+    };
+    saveProfile(nextProfile);
+    persistProfileForRemote(remoteId, nextProfile);
+    dispatch({ type: "profile/update", profile: nextProfile });
+    dispatch({ type: "session/current", sessionId });
+    return nextProfile;
+  }
+
+  function enterInitialHome(remoteId: string) {
+    const nextProfile = {
+      ...state.profile,
+      defaultSessionId: "",
+      lastBoundSessionId: "",
+    };
+    saveProfile(nextProfile);
+    persistProfileForRemote(remoteId, nextProfile);
+    dispatch({ type: "profile/update", profile: nextProfile });
+    dispatch({ type: "session/current", sessionId: "" });
+    dispatch({
+      type: "connection/status",
+      status: "connected",
+      detail: state.connectionDetail || "已连接到当前 remote",
+      reason: "idle",
+      readyReceived: true,
+      bindCompleted: false,
+    });
+  }
+
+  async function recoverMissingSession(remoteId: string, missingSessionId: string) {
+    if (
+      sessionRecoveryRef.current &&
+      sessionRecoveryRef.current.remoteId === remoteId &&
+      sessionRecoveryRef.current.requestedSessionId === missingSessionId &&
+      sessionRecoveryRef.current.attempted
+    ) {
+      return;
+    }
+    const recoverySessionId = createDesktopSessionId(state.profile.clientId);
+    sessionRecoveryRef.current = {
+      remoteId,
+      requestedSessionId: missingSessionId,
+      recoverySessionId,
+      attempted: true,
+      reason: "missing_session",
+    };
+    setSessionListState((current) => ({ ...current, creating: true, error: null }));
+    const ok = await clientRef.current.send({
+      type: "create_session" as never,
+      session_id: recoverySessionId,
+    } as RemoteCommand);
+    if (!ok) {
+      setSessionListState((current) => ({
+        ...current,
+        creating: false,
+        error: current.error || "自动恢复会话失败。",
+      }));
+    }
+  }
+
+  async function startFirstMessageSession(content: string) {
+    const recoverySessionId = createDesktopSessionId(state.profile.clientId);
+    sessionRecoveryRef.current = {
+      remoteId: activeRemoteIdRef.current,
+      requestedSessionId: null,
+      recoverySessionId,
+      attempted: true,
+      reason: "first_message",
+    };
+    pendingInitialMessageRef.current = content;
+    setComposerPhase("sending");
+    setSessionListState((current) => ({ ...current, creating: true, error: null }));
+    const ok = await clientRef.current.send({
+      type: "create_session" as never,
+      session_id: recoverySessionId,
+    } as RemoteCommand);
+    if (!ok) {
+      pendingInitialMessageRef.current = null;
+      sessionRecoveryRef.current = null;
+      setComposerPhase("idle");
+      setSessionListState((current) => ({
+        ...current,
+        creating: false,
+        error: current.error || "新会话创建失败。",
+      }));
+      dispatch({ type: "error/set", message: "新会话创建失败，未发送消息。" });
+    }
+  }
+
   async function requestRemoteSessions(options?: {
     append?: boolean;
     pageToken?: string | null;
@@ -458,6 +625,26 @@ export function App() {
         sessionListRequestModeRef.current === "append"
           ? mergeRemoteSessionItems(sessionListStateRef.current.items, incoming)
           : incoming;
+      if (
+        startupSessionScanRef.current &&
+        startupSessionScanRef.current.remoteId === sourceRemoteId &&
+        startupSessionScanRef.current.awaitingSelection
+      ) {
+        startupSessionScanRef.current = {
+          ...startupSessionScanRef.current,
+          awaitingSelection: false,
+        };
+        const latestDesktopSession = pickLatestDesktopSession(nextItems);
+        if (latestDesktopSession) {
+          rememberRecoveredSession(sourceRemoteId, latestDesktopSession.sessionId);
+          void clientRef.current.send({
+            type: "bind_session",
+            session_id: latestDesktopSession.sessionId,
+          });
+        } else {
+          enterInitialHome(sourceRemoteId);
+        }
+      }
       syncRemoteSessionCatalogFromList(sourceRemoteId, nextItems);
       setSessionListState((current) => ({
         ...current,
@@ -510,6 +697,17 @@ export function App() {
         initialized: true,
         error: null,
       }));
+      if (
+        sessionRecoveryRef.current &&
+        sessionRecoveryRef.current.remoteId === sourceRemoteId &&
+        sessionRecoveryRef.current.recoverySessionId === sessionId
+      ) {
+        rememberRecoveredSession(sourceRemoteId, sessionId);
+        void clientRef.current.send({
+          type: "bind_session",
+          session_id: sessionId,
+        });
+      }
       return;
     }
 
@@ -564,6 +762,14 @@ export function App() {
     }
 
     if (rawEvent.type === "error") {
+      if (
+        rawEvent.command === "bind_session" &&
+        rawEvent.code === "session_not_found" &&
+        typeof rawEvent.session_id === "string" &&
+        rawEvent.session_id.trim().length > 0
+      ) {
+        void recoverMissingSession(sourceRemoteId, rawEvent.session_id);
+      }
       if (rawEvent.command === "list_sessions") {
         setSessionListState((current) => ({
           ...current,
@@ -675,7 +881,11 @@ export function App() {
           });
         }
         if (event.type === "ready") {
-          const activeSessionId = profileOverride.defaultSessionId;
+          sessionRecoveryRef.current = null;
+          startupSessionScanRef.current = {
+            remoteId: remoteIdOverride,
+            awaitingSelection: true,
+          };
           dispatch({
             type: "connection/status",
             status: "connecting",
@@ -685,11 +895,14 @@ export function App() {
             bindCompleted: false,
           });
           void clientRef.current.send({
-            type: "bind_session",
-            session_id: activeSessionId,
-          });
+            type: "list_sessions" as never,
+            page_size: SESSION_PAGE_SIZE,
+            include_archived: false,
+          } as RemoteCommand);
         }
         if (event.type === "session_bound") {
+          startupSessionScanRef.current = null;
+          sessionRecoveryRef.current = null;
           const activeSessionId = event.session_id || profileOverride.defaultSessionId;
           rememberSession(activeSessionId, remoteIdOverride);
           void clientRef.current.send({
@@ -708,6 +921,29 @@ export function App() {
           void clientRef.current.send({
             type: "list_providers" as never,
           } as RemoteCommand);
+          if (pendingInitialMessageRef.current) {
+            const initialMessage = pendingInitialMessageRef.current;
+            pendingInitialMessageRef.current = null;
+            void clientRef.current.send({
+              type: "send_message",
+              session_id: activeSessionId,
+              content: initialMessage,
+              client_id: state.profile.clientId,
+            }).then((ok) => {
+              if (!ok) {
+                setComposerPhase("idle");
+                dispatch({ type: "error/set", message: "消息发送失败，未进入远端会话。" });
+                return;
+              }
+              dispatch({
+                type: "message/user",
+                sessionId: activeSessionId,
+                content: initialMessage,
+              });
+              setDraftInput("");
+              setComposerPhase("idle");
+            });
+          }
         }
         handleSessionProtocolEvent(event as SessionProtocolEvent, remoteIdOverride);
         dispatch({ type: "event/received", event });
@@ -781,6 +1017,16 @@ export function App() {
   async function sendMessage(content: string) {
     const normalized = content.trim();
     if (!normalized) {
+      return;
+    }
+    const canStartFreshSession =
+      !state.ownerReady &&
+      state.readyReceived &&
+      !state.bindCompleted &&
+      state.connectionReason === "idle" &&
+      state.connectionStatus !== "error";
+    if (canStartFreshSession) {
+      await startFirstMessageSession(normalized);
       return;
     }
     const blockedMessage = getCommandBlockMessage(state);

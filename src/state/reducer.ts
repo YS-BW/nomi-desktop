@@ -241,9 +241,17 @@ function replaceHistory(
   sessionState: DesktopSessionState,
   messages: Array<Record<string, unknown>>,
 ): void {
-  sessionState.messages = messages.map((message) =>
+  const normalizedMessages = messages.map((message) =>
     normalizeHistoryMessage(message, sessionState.sessionId),
   );
+  const hasOptimisticLocalMessages = sessionState.messages.some(
+    (message) => message.status !== "history",
+  );
+  if (normalizedMessages.length === 0 && hasOptimisticLocalMessages) {
+    sessionState.activeTurn = null;
+    return;
+  }
+  sessionState.messages = normalizedMessages;
   sessionState.activeTurn = null;
 }
 

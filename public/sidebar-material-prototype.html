@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nomi Material Prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page-bg: #f7f4ee;
+        --page-warm: rgba(242, 234, 223, 0.42);
+        --page-cool: rgba(204, 231, 246, 0.28);
+        --page-cool-soft: rgba(227, 243, 252, 0.22);
+        --sidebar-surface: rgba(238, 248, 255, 0.56);
+        --sidebar-surface-strong: rgba(252, 254, 255, 0.78);
+        --glass-border: rgba(255, 255, 255, 0.72);
+        --glass-border-soft: rgba(0, 0, 0, 0.05);
+        --glass-shadow:
+          0 34px 80px rgba(187, 170, 145, 0.14),
+          0 12px 30px rgba(31, 25, 18, 0.08);
+        --glass-shadow-soft:
+          0 20px 40px rgba(187, 170, 145, 0.1),
+          0 8px 18px rgba(31, 25, 18, 0.05);
+        --text-primary: #171717;
+        --text-secondary: #5f5b54;
+        --text-muted: #8f887d;
+        --chip-bg: rgba(255, 255, 255, 0.82);
+        --chip-shadow: 0 18px 36px rgba(176, 160, 138, 0.14);
+        --active-row: rgba(0, 0, 0, 0.055);
+        --search-bg: rgba(235, 245, 252, 0.84);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        font-family:
+          "SF Pro Display",
+          "PingFang SC",
+          "Helvetica Neue",
+          system-ui,
+          sans-serif;
+        color: var(--text-primary);
+        background:
+          radial-gradient(circle at 0% 0%, var(--page-cool) 0%, transparent 14%),
+          radial-gradient(circle at 12% 8%, var(--page-cool-soft) 0%, transparent 10%),
+          radial-gradient(circle at 100% 10%, rgba(255, 255, 255, 0.92), transparent 34%),
+          radial-gradient(circle at 30% 100%, var(--page-warm), transparent 32%),
+          linear-gradient(180deg, #f8f6f2 0%, var(--page-bg) 100%);
+      }
+
+      body {
+        min-height: 100vh;
+        overflow: hidden;
+      }
+
+      .prototype-shell {
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 332px minmax(0, 1fr);
+        gap: 12px;
+        padding: 10px;
+      }
+
+        .glass-sidebar {
+          position: relative;
+          border-radius: 30px;
+          background:
+            radial-gradient(circle at 10% 2%, rgba(201, 231, 247, 0.22), transparent 10%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.28)),
+            var(--sidebar-surface);
+        border: 1px solid var(--glass-border);
+        box-shadow: var(--glass-shadow);
+        backdrop-filter: blur(28px) saturate(140%);
+        -webkit-backdrop-filter: blur(28px) saturate(140%);
+        padding: 18px 18px 16px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+        .glass-sidebar::before,
+        .floating-chip::before,
+        .composer::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.36), rgba(255, 255, 255, 0) 24%),
+          linear-gradient(135deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0) 42%);
+        pointer-events: none;
+        }
+
+        .glass-sidebar::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          background:
+            radial-gradient(circle at 9% 4%, rgba(184, 225, 248, 0.16), transparent 8%),
+            radial-gradient(circle at 16% 8%, rgba(225, 243, 252, 0.1), transparent 9%);
+          pointer-events: none;
+          mix-blend-mode: normal;
+        }
+
+      .titlebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 2px 4px 14px;
+      }
+
+      .traffic-lights {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .light {
+        width: 17px;
+        height: 17px;
+        border-radius: 50%;
+        box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45);
+      }
+
+      .light.red { background: #ff6057; }
+      .light.yellow { background: #ffbd2f; }
+      .light.green { background: #28c840; }
+
+      .titlebar-actions {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        color: rgba(50, 50, 50, 0.78);
+      }
+
+      .titlebar-icon {
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 12px;
+      }
+
+        .search {
+          position: relative;
+          margin-bottom: 18px;
+          border-radius: 15px;
+          background: var(--search-bg);
+          border: 1px solid rgba(219, 232, 241, 0.94);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+          padding: 14px 16px 14px 44px;
+          font-size: 15px;
+        color: #b1aaa0;
+      }
+
+      .search svg {
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: rgba(112, 106, 98, 0.72);
+      }
+
+      .primary-links {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-bottom: 22px;
+      }
+
+      .nav-link {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        font-size: 17px;
+        font-weight: 600;
+      }
+
+      .nav-link svg,
+      .recent-item svg {
+        flex: none;
+      }
+
+      .section-title {
+        margin: 0 0 14px;
+        padding: 0 14px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .recent-list {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding-right: 4px;
+      }
+
+      .recent-list::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
+
+      .recent-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 11px 14px;
+        border-radius: 15px;
+        font-size: 15px;
+        color: rgba(26, 24, 20, 0.94);
+      }
+
+      .recent-item.active {
+        background: var(--active-row);
+      }
+
+        .sidebar-footer {
+          margin-top: 14px;
+          border-radius: 20px;
+          background: rgba(246, 251, 255, 0.46);
+          border: 1px solid rgba(255, 255, 255, 0.56);
+          padding: 14px;
+          display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .footer-avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #6c7efb, #9aa8ff);
+        color: white;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+      }
+
+      .main-stage {
+        position: relative;
+        min-width: 0;
+        height: 100%;
+        padding: 8px 20px 22px 6px;
+        display: flex;
+        flex-direction: column;
+      }
+
+        .floating-chip {
+        position: relative;
+        align-self: flex-start;
+        padding: 16px 22px;
+        border-radius: 999px;
+        background:
+          radial-gradient(circle at 16% 0%, rgba(215, 238, 250, 0.2), transparent 24%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.56)),
+          var(--chip-bg);
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        box-shadow: var(--chip-shadow);
+        backdrop-filter: blur(22px) saturate(140%);
+        -webkit-backdrop-filter: blur(22px) saturate(140%);
+        font-size: 19px;
+        font-weight: 700;
+      }
+
+      .content-stage {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        padding: 82px 0 0;
+      }
+
+      .assistant-header {
+        max-width: 720px;
+        margin: 0 auto 42px;
+        text-align: center;
+      }
+
+      .assistant-greeting {
+        margin: 0 0 22px;
+        font-size: 23px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .assistant-actions {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        color: rgba(82, 76, 68, 0.82);
+      }
+
+      .message-column {
+        max-width: 720px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 26px;
+        font-size: 20px;
+        line-height: 2.15;
+        font-weight: 600;
+      }
+
+      .message-block {
+        white-space: pre-wrap;
+      }
+
+      .composer-wrap {
+        position: absolute;
+        left: 50%;
+        bottom: 16px;
+        transform: translateX(-50%);
+        width: min(720px, calc(100% - 64px));
+      }
+
+        .composer {
+        position: relative;
+        border-radius: 28px;
+        background:
+          radial-gradient(circle at 14% 0%, rgba(214, 235, 248, 0.14), transparent 20%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.58)),
+          var(--sidebar-surface-strong);
+        border: 1px solid rgba(255, 255, 255, 0.84);
+        box-shadow:
+          0 28px 60px rgba(187, 170, 145, 0.16),
+          0 10px 22px rgba(31, 25, 18, 0.08);
+        backdrop-filter: blur(30px) saturate(140%);
+        -webkit-backdrop-filter: blur(30px) saturate(140%);
+        padding: 20px 22px 16px;
+      }
+
+      .composer-top {
+        color: rgba(114, 108, 100, 0.94);
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 18px;
+      }
+
+      .composer-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .composer-tools,
+      .composer-actions {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        color: rgba(76, 73, 67, 0.88);
+      }
+
+      .round-action {
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.72);
+        background: linear-gradient(180deg, rgba(235, 246, 253, 0.78), rgba(255, 255, 255, 0.4));
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      svg {
+        stroke: currentColor;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="prototype-shell">
+      <aside class="glass-sidebar">
+        <div class="titlebar">
+          <div class="traffic-lights">
+            <span class="light red"></span>
+            <span class="light yellow"></span>
+            <span class="light green"></span>
+          </div>
+          <div class="titlebar-actions">
+            <span class="titlebar-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                <rect x="3" y="4" width="18" height="16" rx="4"></rect>
+                <path d="M9 4v16"></path>
+              </svg>
+            </span>
+            <span class="titlebar-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4z"></path>
+              </svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="search">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="M20 20l-3.5-3.5"></path>
+          </svg>
+          搜索
+        </div>
+
+        <nav class="primary-links">
+          <div class="nav-link">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke-width="2">
+              <path d="M12 2a8.5 8.5 0 0 1 7.2 13l1.5 4.3-4.5-1.1A8.5 8.5 0 1 1 12 2z"></path>
+              <path d="M8.5 9.5h7"></path>
+              <path d="M8.5 13h5"></path>
+            </svg>
+            ChatGPT
+          </div>
+          <div class="nav-link">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke-width="2">
+              <path d="M4 7a3 3 0 0 1 3-3h4"></path>
+              <path d="M4 7v10a3 3 0 0 0 3 3h10"></path>
+              <path d="M14 7h6"></path>
+              <path d="M17 4v6"></path>
+            </svg>
+            项目
+          </div>
+        </nav>
+
+        <h2 class="section-title">最近</h2>
+        <div class="recent-list">
+          <div class="recent-item">Nomi Desktop 图标设计</div>
+          <div class="recent-item">无生试讲稿修改</div>
+          <div class="recent-item">Mac 隐藏 Dock 快捷键</div>
+          <div class="recent-item">逐字稿修改建议</div>
+          <div class="recent-item">情头生成请求</div>
+          <div class="recent-item">火山引擎 API 获取</div>
+          <div class="recent-item">不要渲染</div>
+          <div class="recent-item">项目进度成本分析</div>
+          <div class="recent-item active">问候交流</div>
+          <div class="recent-item">头像生成请求</div>
+          <div class="recent-item">设计头像风格一致</div>
+          <div class="recent-item">Windows 兼容性修复提示词</div>
+          <div class="recent-item">问候与心情</div>
+          <div class="recent-item">皮皮的故事</div>
+        </div>
+
+        <div class="sidebar-footer">
+          <span class="footer-avatar">昂</span>
+          <strong>昂 星团</strong>
+        </div>
+      </aside>
+
+      <main class="main-stage">
+        <div class="floating-chip">ChatGPT &#8250;</div>
+
+        <section class="content-stage">
+          <div class="assistant-header">
+            <p class="assistant-greeting">你好呀～今天在忙啥 👀</p>
+            <div class="assistant-actions">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+                <rect x="4" y="4" width="11" height="11" rx="2"></rect>
+              </svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                <path d="M11 5 6 9l5 4V5Z"></path>
+                <path d="M18 19a9 9 0 0 0 0-14"></path>
+              </svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                <path d="M7 10v10"></path>
+                <path d="M12 20V4"></path>
+                <path d="M17 10v10"></path>
+                <path d="M5 10a3 3 0 0 1 3-3h1l1-3h4l1 3h1a3 3 0 0 1 3 3"></path>
+              </svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                <path d="M10 14H5.2A2.2 2.2 0 0 1 3 11.8V6.2A2.2 2.2 0 0 1 5.2 4h6.6A2.2 2.2 0 0 1 14 6.2V18l-4-4Z"></path>
+              </svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                <circle cx="5" cy="12" r="1.8"></circle>
+                <circle cx="12" cy="12" r="1.8"></circle>
+                <circle cx="19" cy="12" r="1.8"></circle>
+              </svg>
+            </div>
+          </div>
+
+          <div class="message-column">
+            <div class="message-block">有一只猫，叫皮皮。</div>
+            <div class="message-block">它住在一家 24 小时营业的网吧里。</div>
+            <div class="message-block">别人家的猫都抓老鼠，皮皮不一样，它会“陪打游戏”。</div>
+            <div class="message-block">凌晨两点，网吧里总有几个大学生顶着黑眼圈打排位。谁要是一边打游戏一边叹气，皮皮就会慢悠悠跳上桌。</div>
+            <div class="message-block">有个男生连续输了八把，气得差点退游。结果皮皮跳上来，正好踩到“开始匹配”。</div>
+            <div class="message-block">“……你还帮我开？”</div>
+          </div>
+        </section>
+
+        <div class="composer-wrap">
+          <div class="composer">
+            <div class="composer-top">有问题，尽管问</div>
+            <div class="composer-bottom">
+              <div class="composer-tools">
+                <span class="round-action">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                    <path d="M12 5v14"></path>
+                    <path d="M5 12h14"></path>
+                  </svg>
+                </span>
+                <span class="round-action">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <path d="M3 12h18"></path>
+                    <path d="M12 3a15.3 15.3 0 0 1 4 9 15.3 15.3 0 0 1-4 9 15.3 15.3 0 0 1-4-9 15.3 15.3 0 0 1 4-9Z"></path>
+                  </svg>
+                </span>
+              </div>
+              <div class="composer-actions">
+                <span class="round-action">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2">
+                    <path d="M7 7h10l-1 12H8L7 7Z"></path>
+                    <path d="M9 7V5a3 3 0 0 1 6 0v2"></path>
+                  </svg>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>
