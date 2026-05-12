@@ -163,6 +163,7 @@ function renderShell(overrides: {
   const updateProfile = vi.fn();
   const toggleSidebar = vi.fn();
   const setPreviewThemePreference = vi.fn();
+  const clearGlobalError = vi.fn();
 
   render(
     <MainShell
@@ -184,6 +185,7 @@ function renderShell(overrides: {
       deleteRemote={deleteRemote}
       toggleSidebar={toggleSidebar}
       updateProfile={updateProfile}
+      clearGlobalError={clearGlobalError}
     />,
   );
 
@@ -197,6 +199,7 @@ function renderShell(overrides: {
     selectSession,
     updateProfile,
     toggleSidebar,
+    clearGlobalError,
   };
 }
 

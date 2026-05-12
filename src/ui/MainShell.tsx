@@ -72,6 +72,7 @@ interface MainShellProps {
   deleteRemote(remoteId: string): void;
   toggleSidebar(): void;
   updateProfile(patch: Partial<DesktopConnectionProfile>): void;
+  clearGlobalError(): void;
 }
 
 interface SidebarDisclosureProps {
@@ -149,6 +150,13 @@ interface TaskFeedbackState {
 interface ProviderSettingsFeedbackState {
   tone: "error" | "success";
   message: string;
+}
+
+interface BannerNotificationState {
+  id: string;
+  tone: "error" | "success";
+  message: string;
+  source: "global" | "remote" | "task" | "skill" | "provider";
 }
 
 interface ModelSettingsProviderItem {
@@ -246,6 +254,11 @@ function Icon(props: { name: string; className?: string }) {
       <>
         <path d="M12 4.5v15" {...common} strokeWidth={2.6} />
         <path d="M4.5 12h15" {...common} strokeWidth={2.6} />
+      </>
+    ),
+    spinner: (
+      <>
+        <path d="M12 3a9 9 0 1 1-6.36 2.64" {...common} />
       </>
     ),
   };
@@ -573,6 +586,29 @@ function SidebarMoreMenu(props: {
   );
 }
 
+function BannerNotification(props: {
+  tone: "error" | "success";
+  message: string;
+  onClose(): void;
+}) {
+  const { tone, message, onClose } = props;
+  return (
+    <div className="banner-notification-layer" role="status" aria-live="polite">
+      <div className={`banner-notification ${tone}`}>
+        <div className="banner-notification-copy">{message}</div>
+        <button
+          type="button"
+          className="banner-notification-close"
+          aria-label="关闭通知"
+          onClick={onClose}
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ActionModal(props: {
   title: string;
   onClose(): void;
@@ -693,6 +729,7 @@ export function MainShell(props: MainShellProps) {
     deleteRemote,
     toggleSidebar,
     updateProfile,
+    clearGlobalError,
   } = props;
   const connectionLabel = getConnectionLabel(state);
   const connectionDetailLabel = getConnectionDetailLabel(state);
@@ -720,6 +757,7 @@ export function MainShell(props: MainShellProps) {
   });
   const [remoteModal, setRemoteModal] = useState<RemoteFormState | null>(null);
   const [remoteFormError, setRemoteFormError] = useState<string | null>(null);
+  const [remoteFeedback, setRemoteFeedback] = useState<string | null>(null);
   const [mcpModal, setMcpModal] = useState<McpFormState | null>(null);
   const [mcpFormError, setMcpFormError] = useState<string | null>(null);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
@@ -743,8 +781,10 @@ export function MainShell(props: MainShellProps) {
   const [providerReloading, setProviderReloading] = useState(false);
   const [providerSettingsFeedback, setProviderSettingsFeedback] =
     useState<ProviderSettingsFeedbackState | null>(null);
+  const [bannerNotification, setBannerNotification] = useState<BannerNotificationState | null>(null);
   const processedTaskFeedbackRef = useRef<string | null>(null);
   const processedSkillFeedbackRef = useRef<string | null>(null);
+  const processedNotificationKeyRef = useRef<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const threadScrollerRef = useRef<HTMLElement | null>(null);
   const threadContentRef = useRef<HTMLDivElement | null>(null);
@@ -1035,9 +1075,68 @@ export function MainShell(props: MainShellProps) {
     setProviderActivationBusyProvider(null);
     setProviderReloading(false);
     setProviderSettingsFeedback(null);
+    setRemoteFeedback(null);
+    setBannerNotification(null);
+    processedNotificationKeyRef.current = null;
     processedTaskFeedbackRef.current = null;
     processedSkillFeedbackRef.current = null;
   }, [activeRemoteId, state.currentSessionId]);
+
+  useEffect(() => {
+    const candidates: Array<Omit<BannerNotificationState, "id"> | null> = [
+      state.errorText
+        ? { tone: "error", message: state.errorText, source: "global" }
+        : null,
+      remoteFeedback
+        ? { tone: "error", message: remoteFeedback, source: "remote" }
+        : null,
+      taskFeedback
+        ? { tone: taskFeedback.tone, message: taskFeedback.message, source: "task" }
+        : null,
+      skillFeedback
+        ? { tone: skillFeedback.tone, message: skillFeedback.message, source: "skill" }
+        : null,
+      providerSettingsFeedback
+        ? {
+            tone: providerSettingsFeedback.tone,
+            message: providerSettingsFeedback.message,
+            source: "provider",
+          }
+        : null,
+    ];
+    const nextNotification = candidates.find(Boolean) || null;
+    if (!nextNotification) {
+      return;
+    }
+    const key = `${nextNotification.source}::${nextNotification.tone}::${nextNotification.message}`;
+    if (processedNotificationKeyRef.current === key) {
+      return;
+    }
+    processedNotificationKeyRef.current = key;
+    setBannerNotification({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      ...nextNotification,
+    });
+  }, [providerSettingsFeedback, remoteFeedback, skillFeedback, state.errorText, taskFeedback]);
+
+  function dismissBannerNotification(source = bannerNotification?.source) {
+    if (!source) {
+      return;
+    }
+    if (source === "global") {
+      clearGlobalError();
+    } else if (source === "remote") {
+      setRemoteFeedback(null);
+    } else if (source === "task") {
+      setTaskFeedback(null);
+    } else if (source === "skill") {
+      setSkillFeedback(null);
+    } else if (source === "provider") {
+      setProviderSettingsFeedback(null);
+    }
+    processedNotificationKeyRef.current = null;
+    setBannerNotification(null);
+  }
 
   useEffect(() => {
     const latestProviderEvent = state.eventLog.find(
@@ -1418,11 +1517,13 @@ export function MainShell(props: MainShellProps) {
   }
 
   function openCreateRemoteModal() {
+    setRemoteFeedback(null);
     setRemoteFormError(null);
     setRemoteModal(buildRemoteFormState());
   }
 
   function openEditRemoteModal(entry: DesktopRemoteEntry) {
+    setRemoteFeedback(null);
     setRemoteFormError(null);
     setRemoteModal(buildRemoteFormState(entry));
   }
@@ -1452,6 +1553,15 @@ export function MainShell(props: MainShellProps) {
       token: remoteModal.token,
     });
     setRemoteModal(null);
+  }
+
+  function handleRemoteDelete(entry: DesktopRemoteEntry) {
+    if (remoteEntries.length <= 1) {
+      setRemoteFeedback("至少保留一个远端，当前最后一个不能删除。");
+      return;
+    }
+    setRemoteFeedback(`已删除远端“${entry.name}”。`);
+    deleteRemote(entry.id);
   }
 
   async function submitTaskModal() {
@@ -1721,6 +1831,14 @@ export function MainShell(props: MainShellProps) {
         showHomePrototype ? "view-home" : "view-thread",
       ].filter(Boolean).join(" ")}
     >
+      {bannerNotification ? (
+        <BannerNotification
+          key={bannerNotification.id}
+          tone={bannerNotification.tone}
+          message={bannerNotification.message}
+          onClose={() => dismissBannerNotification()}
+        />
+      ) : null}
       <aside className="desktop-sidebar">
         <section className="sidebar-section">
           <div className="sidebar-section-label">当前远端</div>
@@ -1810,12 +1928,7 @@ export function MainShell(props: MainShellProps) {
                             label: "删除",
                             danger: true,
                             disabled: remoteEntries.length <= 1,
-                            onClick: () => {
-                              if (!window.confirm(`确认删除远端“${entry.name}”吗？`)) {
-                                return;
-                              }
-                              deleteRemote(entry.id);
-                            },
+                            onClick: () => handleRemoteDelete(entry),
                           },
                         ]}
                       />
@@ -1922,7 +2035,6 @@ export function MainShell(props: MainShellProps) {
                   ))}
                 </div>
               )}
-            {taskFeedback ? <div className="sidebar-inline-feedback error">{taskFeedback.message}</div> : null}
           </SidebarDisclosure>
         </section>
 
@@ -1967,7 +2079,6 @@ export function MainShell(props: MainShellProps) {
                   </article>
                 ))}
             </div>
-            {skillFeedback ? <div className="sidebar-inline-feedback error">{skillFeedback.message}</div> : null}
           </SidebarDisclosure>
         </section>
 
@@ -2044,7 +2155,12 @@ export function MainShell(props: MainShellProps) {
           <summary>高级设置</summary>
           <div className="sidebar-debug-body">
             <div className="control-actions">
-              <button className="secondary" type="button" onClick={() => void actions.createNewSession()}>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => void actions.createNewSession()}
+                disabled={sessionListState.creating || Boolean(sessionListState.bindingSessionId)}
+              >
                 新建 session
               </button>
               <button
@@ -2299,7 +2415,6 @@ export function MainShell(props: MainShellProps) {
         </section>
 
         <footer className="chat-composer-shell">
-          {state.errorText ? <div className="composer-error">{state.errorText}</div> : null}
           <div className="chat-composer">
             <div className="composer-row">
               <textarea
@@ -2354,6 +2469,7 @@ export function MainShell(props: MainShellProps) {
                   <div className="session-manager-group-list">
                     {group.items.map((session) => {
                       const isActive = session.sessionId === state.currentSessionId;
+                      const isBinding = sessionListState.bindingSessionId === session.sessionId;
                       return (
                         <div
                           key={session.sessionId}
@@ -2366,6 +2482,7 @@ export function MainShell(props: MainShellProps) {
                               void selectSession(session.sessionId);
                               closeSessionManager();
                             }}
+                            disabled={isBinding}
                           >
                             <div className="session-manager-item-row compact">
                               <div className="session-manager-item-title mono">
@@ -2373,6 +2490,9 @@ export function MainShell(props: MainShellProps) {
                               </div>
                               <div className="session-manager-item-badges">
                                 {isActive ? <span className="session-manager-badge active">当前</span> : null}
+                                {!isActive && isBinding ? (
+                                  <span className="session-manager-badge">切换中</span>
+                                ) : null}
                               </div>
                             </div>
                             <div className="session-manager-item-meta">
@@ -2384,15 +2504,20 @@ export function MainShell(props: MainShellProps) {
                             <button
                               type="button"
                               className="sidebar-inline-button danger"
-                              disabled={isActive || sessionListState.deletingSessionId === session.sessionId}
+                              disabled={
+                                isActive ||
+                                isBinding ||
+                                sessionListState.deletingSessionId === session.sessionId
+                              }
                               onClick={() => {
-                                if (!window.confirm(`确认删除会话“${session.sessionId}”吗？`)) {
-                                  return;
-                                }
                                 void actions.deleteRemoteSession(session.sessionId);
                               }}
                             >
-                              {sessionListState.deletingSessionId === session.sessionId ? "删除中..." : "删除"}
+                              {sessionListState.deletingSessionId === session.sessionId
+                                ? "删除中..."
+                                : isBinding
+                                  ? "切换中..."
+                                  : "删除"}
                             </button>
                           </div>
                         </div>
@@ -2407,12 +2532,23 @@ export function MainShell(props: MainShellProps) {
                 className="sidebar-inline-button"
                 type="button"
                 onClick={() => {
-                  closeSessionManager();
                   void actions.createNewSession();
                 }}
-                disabled={sessionListState.creating}
+                disabled={sessionListState.creating || Boolean(sessionListState.bindingSessionId)}
               >
-                {sessionListState.creating ? "创建中..." : "新建会话"}
+                {sessionListState.creating ? (
+                  <>
+                    <Icon name="spinner" className="session-manager-spinner" />
+                    创建中...
+                  </>
+                ) : Boolean(sessionListState.bindingSessionId) ? (
+                  <>
+                    <Icon name="spinner" className="session-manager-spinner" />
+                    绑定中...
+                  </>
+                ) : (
+                  "新建会话"
+                )}
               </button>
               <button
                 className="sidebar-inline-button secondary"

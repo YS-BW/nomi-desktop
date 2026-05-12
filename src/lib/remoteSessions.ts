@@ -16,6 +16,8 @@ export interface RemoteSessionListState {
   loading: boolean;
   loadingMore: boolean;
   creating: boolean;
+  pendingCreatedSessionId: string | null;
+  bindingSessionId: string | null;
   deletingSessionId: string | null;
   initialized: boolean;
   error: string | null;
@@ -46,6 +48,8 @@ export function createEmptyRemoteSessionListState(): RemoteSessionListState {
     loading: false,
     loadingMore: false,
     creating: false,
+    pendingCreatedSessionId: null,
+    bindingSessionId: null,
     deletingSessionId: null,
     initialized: false,
     error: null,

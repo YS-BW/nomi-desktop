@@ -211,6 +211,10 @@ export function App() {
     remoteId: string;
     awaitingSelection: boolean;
   } | null>(null);
+  const pendingSessionSelectionRef = useRef<{
+    remoteId: string;
+    sessionId: string;
+  } | null>(null);
   const pendingInitialMessageRef = useRef<string | null>(null);
   const remoteCatalogRef = useRef(initialRemoteCatalog);
   const activeRemoteIdRef = useRef(initialRemoteCatalog.activeRemoteId);
@@ -529,7 +533,12 @@ export function App() {
       attempted: true,
       reason: "missing_session",
     };
-    setSessionListState((current) => ({ ...current, creating: true, error: null }));
+    setSessionListState((current) => ({
+      ...current,
+      creating: true,
+      pendingCreatedSessionId: recoverySessionId,
+      error: null,
+    }));
     const ok = await clientRef.current.send({
       type: "create_session" as never,
       session_id: recoverySessionId,
@@ -566,6 +575,7 @@ export function App() {
       setSessionListState((current) => ({
         ...current,
         creating: false,
+        pendingCreatedSessionId: null,
         error: current.error || "新会话创建失败。",
       }));
       dispatch({ type: "error/set", message: "新会话创建失败，未发送消息。" });
@@ -597,6 +607,7 @@ export function App() {
         loading: false,
         loadingMore: false,
         creating: false,
+        bindingSessionId: null,
         deletingSessionId: null,
         error: current.error || "会话列表请求失败。",
       }));
@@ -668,7 +679,12 @@ export function App() {
           ? rawEvent.session_id
           : null;
       if (!sessionId) {
-        setSessionListState((current) => ({ ...current, creating: false }));
+        setSessionListState((current) => ({
+          ...current,
+          creating: false,
+          pendingCreatedSessionId: null,
+          bindingSessionId: null,
+        }));
         return;
       }
       const createdItem = normalizeRemoteSessionItem({
@@ -694,9 +710,26 @@ export function App() {
               ? current.totalCount
               : current.totalCount + 1,
         creating: false,
+        pendingCreatedSessionId:
+          current.pendingCreatedSessionId === sessionId ? null : current.pendingCreatedSessionId,
         initialized: true,
         error: null,
       }));
+      if (sessionListStateRef.current.pendingCreatedSessionId === sessionId) {
+        pendingSessionSelectionRef.current = {
+          remoteId: sourceRemoteId,
+          sessionId,
+        };
+        setSessionListState((current) => ({
+          ...current,
+          bindingSessionId: sessionId,
+        }));
+        void clientRef.current.send({
+          type: "bind_session",
+          session_id: sessionId,
+        } as RemoteCommand);
+        return;
+      }
       if (
         sessionRecoveryRef.current &&
         sessionRecoveryRef.current.remoteId === sourceRemoteId &&
@@ -717,7 +750,7 @@ export function App() {
           ? rawEvent.session_id
           : null;
       if (!sessionId) {
-        setSessionListState((current) => ({ ...current, deletingSessionId: null }));
+        setSessionListState((current) => ({ ...current, deletingSessionId: null, bindingSessionId: null }));
         return;
       }
       const removed = sessionListStateRef.current.items.some((item) => item.sessionId === sessionId);
@@ -775,6 +808,8 @@ export function App() {
           ...current,
           loading: false,
           loadingMore: false,
+          pendingCreatedSessionId: null,
+          bindingSessionId: null,
           error: typeof rawEvent.message === "string" ? rawEvent.message : "会话列表加载失败。",
         }));
       }
@@ -782,7 +817,24 @@ export function App() {
         setSessionListState((current) => ({
           ...current,
           creating: false,
+          pendingCreatedSessionId: null,
+          bindingSessionId: null,
           error: typeof rawEvent.message === "string" ? rawEvent.message : current.error,
+        }));
+      }
+      if (rawEvent.command === "bind_session") {
+        const failedSessionId =
+          typeof rawEvent.session_id === "string" && rawEvent.session_id.trim().length > 0
+            ? rawEvent.session_id
+            : pendingSessionSelectionRef.current?.sessionId || null;
+        setSessionListState((current) => ({
+          ...current,
+          bindingSessionId:
+            failedSessionId && current.bindingSessionId === failedSessionId ? null : current.bindingSessionId,
+          error:
+            typeof rawEvent.message === "string" && rawEvent.message.trim().length > 0
+              ? rawEvent.message
+              : current.error || "会话绑定失败。",
         }));
       }
       if (rawEvent.command === "delete_session") {
@@ -904,7 +956,48 @@ export function App() {
           startupSessionScanRef.current = null;
           sessionRecoveryRef.current = null;
           const activeSessionId = event.session_id || profileOverride.defaultSessionId;
+          const pendingSelection =
+            pendingSessionSelectionRef.current &&
+            pendingSessionSelectionRef.current.remoteId === remoteIdOverride &&
+            pendingSessionSelectionRef.current.sessionId === activeSessionId
+              ? pendingSessionSelectionRef.current
+              : null;
+          if (pendingSelection) {
+            const targetProfile = {
+              ...profileOverride,
+              defaultSessionId: activeSessionId,
+              lastBoundSessionId: activeSessionId,
+            };
+            persistRemoteCatalog(
+              registerRemoteSession(
+                upsertRemoteEntry(remoteCatalogRef.current, {
+                  id: remoteIdOverride,
+                  name:
+                    remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteIdOverride)?.name ||
+                    "远端",
+                  profile: targetProfile,
+                  sessionIds:
+                    remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteIdOverride)?.sessionIds ||
+                    [],
+                }),
+                remoteIdOverride,
+                activeSessionId,
+              ),
+            );
+            dispatch({ type: "profile/update", profile: targetProfile });
+            dispatch({ type: "session/current", sessionId: activeSessionId });
+            pendingSessionSelectionRef.current = null;
+          }
           rememberSession(activeSessionId, remoteIdOverride);
+          setSessionListState((current) => ({
+            ...current,
+            bindingSessionId:
+              current.bindingSessionId === activeSessionId ? null : current.bindingSessionId,
+            creating: false,
+            pendingCreatedSessionId:
+              current.pendingCreatedSessionId === activeSessionId ? null : current.pendingCreatedSessionId,
+            error: null,
+          }));
           void clientRef.current.send({
             type: "load_history",
             session_id: activeSessionId,
@@ -985,7 +1078,12 @@ export function App() {
       }
     }
     const nextSessionId = createDesktopSessionId(state.profile.clientId);
-    setSessionListState((current) => ({ ...current, creating: true, error: null }));
+    setSessionListState((current) => ({
+      ...current,
+      creating: true,
+      pendingCreatedSessionId: nextSessionId,
+      error: null,
+    }));
     const ok = await sendCommand({
       type: "create_session" as never,
       session_id: nextSessionId,
@@ -995,11 +1093,11 @@ export function App() {
       setSessionListState((current) => ({
         ...current,
         creating: false,
+        pendingCreatedSessionId: null,
         error: current.error || "会话创建请求失败。",
       }));
       return;
     }
-    await selectSession(nextSessionId);
   }
 
   async function interruptCurrentTurn() {
@@ -1192,31 +1290,28 @@ export function App() {
     if (!trimmedSessionId || trimmedSessionId === state.currentSessionId) {
       return;
     }
-    const nextProfile = {
-      ...state.profile,
-      defaultSessionId: trimmedSessionId,
-      lastBoundSessionId: trimmedSessionId,
-    };
-    const nextCatalog = registerRemoteSession(
-      upsertRemoteEntry(remoteCatalog, {
-        id: remoteCatalog.activeRemoteId,
-        name:
-          remoteCatalog.remotes.find((entry) => entry.id === remoteCatalog.activeRemoteId)?.name || "远端",
-        profile: nextProfile,
-        sessionIds:
-          remoteCatalog.remotes.find((entry) => entry.id === remoteCatalog.activeRemoteId)?.sessionIds || [],
-      }),
-      remoteCatalog.activeRemoteId,
-      trimmedSessionId,
-    );
-    persistRemoteCatalog(nextCatalog);
-    dispatch({ type: "profile/update", profile: nextProfile });
-    dispatch({ type: "session/current", sessionId: trimmedSessionId });
-    dispatch({ type: "sidebar/reset" });
     dispatch({ type: "error/set", message: null });
-    if (state.ownerReady) {
-      await sendCommand({ type: "bind_session", session_id: trimmedSessionId });
-      fetchBoundSessionState(trimmedSessionId);
+    pendingSessionSelectionRef.current = {
+      remoteId: remoteCatalog.activeRemoteId,
+      sessionId: trimmedSessionId,
+    };
+    dispatch({ type: "sidebar/reset" });
+    setSessionListState((current) => ({
+      ...current,
+      bindingSessionId: trimmedSessionId,
+      error: null,
+    }));
+    if (!state.ownerReady) {
+      return;
+    }
+    const ok = await sendCommand({ type: "bind_session", session_id: trimmedSessionId });
+    if (!ok) {
+      pendingSessionSelectionRef.current = null;
+      setSessionListState((current) => ({
+        ...current,
+        bindingSessionId:
+          current.bindingSessionId === trimmedSessionId ? null : current.bindingSessionId,
+      }));
     }
   }
 
@@ -1338,6 +1433,7 @@ export function App() {
       selectSession={(sessionId) => void selectSession(sessionId)}
       saveRemote={saveRemoteEntryDraft}
       deleteRemote={(remoteId) => void deleteRemote(remoteId)}
+      clearGlobalError={() => dispatch({ type: "error/set", message: null })}
     />
   );
 }

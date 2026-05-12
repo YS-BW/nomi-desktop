@@ -1140,6 +1140,12 @@ textarea {
   justify-content: flex-end;
 }
 
+.session-manager-spinner {
+  width: 14px;
+  height: 14px;
+  animation: session-spinner-rotate 900ms linear infinite;
+}
+
 .model-settings-layout {
   display: grid;
   grid-template-columns: 204px minmax(0, 1fr);
@@ -1460,6 +1466,95 @@ textarea {
   color: var(--error);
   border: 1px solid var(--error-border);
   font-size: 13px;
+}
+
+.banner-notification-layer {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  z-index: 30;
+  width: min(520px, calc(100vw - 28px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.banner-notification {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 12px 14px 12px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--border-glass-strong);
+  background:
+    linear-gradient(180deg, var(--glass-tint-soft), transparent 30%),
+    var(--surface-popover);
+  box-shadow: var(--shadow-popover);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  animation: banner-slide-in 220ms var(--motion-enter);
+  transition:
+    transform 160ms ease,
+    opacity 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.banner-notification.success {
+  border-color: color-mix(in srgb, var(--success) 24%, var(--border-glass-strong) 76%);
+}
+
+.banner-notification.error {
+  border-color: color-mix(in srgb, var(--error) 26%, var(--border-glass-strong) 74%);
+}
+
+.banner-notification-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.banner-notification-close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 12px;
+  border: 1px solid var(--border-glass);
+  background: var(--surface-glass-light);
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.banner-notification-close:hover {
+  color: var(--text-primary);
+  border-color: var(--border-glass-strong);
+}
+
+@keyframes banner-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes session-spinner-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .overlay-actions {
