@@ -112,7 +112,7 @@ export default defineConfig({
             }
 
             const body = await readRequestBody(req);
-            const response = await fetch(`http://${host}:${port}/skills/upload`, {
+            const response = await fetch(`http://${host}:${port}/v1/skills/uploads`, {
               method: "POST",
               headers: {
                 "Content-Type": contentType,

@@ -16,6 +16,7 @@ import type {
   ProviderStateItem,
   SidebarMcpItem,
   SidebarTaskItem,
+  TaskSchedule,
   ThemePreference,
 } from "../lib/types";
 import type { DesktopRemoteEntry } from "../lib/store";
@@ -39,7 +40,7 @@ interface MainShellProps {
     refreshRemoteSessions(): Promise<void>;
     loadMoreRemoteSessions(): Promise<void>;
     deleteRemoteSession(sessionId: string): Promise<void>;
-    refreshProviderState(): Promise<void>;
+    refreshProviderState(): Promise<boolean>;
     setProviderSettings(input: {
       provider: string;
       apiKey?: string | null;
@@ -309,10 +310,10 @@ function formatDuration(ms: number | null): string {
 
 function formatTaskSchedule(task: SidebarTaskItem): string {
   if (task.scheduleKind === "at") {
-    return `一次性 · ${formatDateTime(task.scheduleAtMs)}`;
+    return `一次性 · ${formatDateTime(task.scheduleAtMs ?? null)}`;
   }
   if (task.scheduleKind === "every") {
-    return `循环间隔 · ${formatDuration(task.scheduleEveryMs)}`;
+    return `循环间隔 · ${formatDuration(task.scheduleEveryMs ?? null)}`;
   }
   if (task.scheduleKind === "cron") {
     return task.scheduleExpr
@@ -356,7 +357,7 @@ function formatTaskTime(task: SidebarTaskItem): string {
     return formatDateTime(task.nextRunAtMs);
   }
   if (task.scheduleKind === "at") {
-    return formatDateTime(task.scheduleAtMs);
+    return formatDateTime(task.scheduleAtMs ?? null);
   }
   return "未安排";
 }
@@ -403,6 +404,17 @@ function buildSessionChannelGroups(items: RemoteSessionListState["items"]): Sess
     .filter((group) => group.items.length > 0);
 }
 
+function scrollElementToBottom(element: HTMLElement) {
+  if (typeof element.scrollTo === "function") {
+    element.scrollTo({
+      top: element.scrollHeight,
+      behavior: "smooth",
+    });
+    return;
+  }
+  element.scrollTop = element.scrollHeight;
+}
+
 function getComposerStatusCopy(
   state: DesktopAppState,
   composerPhase: MainShellProps["composerPhase"],
@@ -413,11 +425,9 @@ function getComposerStatusCopy(
   if (composerPhase === "sending") {
     return "正在发送到当前会话...";
   }
-  if (!state.ownerReady) {
+  if (!state.bootstrapLoaded) {
     if (state.connectionStatus === "connecting") {
-      return state.readyReceived
-        ? "当前还没有选中会话，发送首条消息时会自动创建。"
-        : "正在连接 remote，请稍等。";
+      return "正在连接 remote，请稍等。";
     }
     if (state.connectionStatus === "error") {
       return state.connectionReason === "auth_error"
@@ -426,7 +436,7 @@ function getComposerStatusCopy(
     }
     return "未连接，先连上 remote 再发送。";
   }
-  if (state.sessionState.activeTurn && !state.sessionState.activeTurn.completed) {
+  if (state.sessionState.streamingDraft?.status === "streaming") {
     return "正在回复中，发送新消息会先中断上一轮。";
   }
   return "Enter 发送，Shift+Enter 换行。";
@@ -745,7 +755,7 @@ export function MainShell(props: MainShellProps) {
   );
   const showHomePrototype =
     !hasMeaningfulMessages &&
-    (!state.sessionState.activeTurn || state.sessionState.activeTurn.completed);
+    state.sessionState.streamingDraft?.status !== "streaming";
   const [expandedProcessKeys, setExpandedProcessKeys] = useState<Record<string, boolean>>({});
   const [taskModal, setTaskModal] = useState<TaskFormState | null>(null);
   const [taskFormError, setTaskFormError] = useState<string | null>(null);
@@ -765,6 +775,7 @@ export function MainShell(props: MainShellProps) {
   const [sessionManagerRendered, setSessionManagerRendered] = useState(false);
   const [sessionManagerClosing, setSessionManagerClosing] = useState(false);
   const [sessionManagerVisible, setSessionManagerVisible] = useState(false);
+  const [pendingSessionManagerSelection, setPendingSessionManagerSelection] = useState<string | null>(null);
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [modelSettingsRendered, setModelSettingsRendered] = useState(false);
   const [modelSettingsClosing, setModelSettingsClosing] = useState(false);
@@ -782,8 +793,6 @@ export function MainShell(props: MainShellProps) {
   const [providerSettingsFeedback, setProviderSettingsFeedback] =
     useState<ProviderSettingsFeedbackState | null>(null);
   const [bannerNotification, setBannerNotification] = useState<BannerNotificationState | null>(null);
-  const processedTaskFeedbackRef = useRef<string | null>(null);
-  const processedSkillFeedbackRef = useRef<string | null>(null);
   const processedNotificationKeyRef = useRef<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const threadScrollerRef = useRef<HTMLElement | null>(null);
@@ -794,10 +803,18 @@ export function MainShell(props: MainShellProps) {
   const themeSliderDragValueRef = useRef<number | null>(null);
   const composerStatusCopy = getComposerStatusCopy(state, composerPhase);
   const activeRemote = remoteEntries.find((entry) => entry.id === activeRemoteId) || remoteEntries[0] || null;
-  const sendDisabled = draftInput.trim().length === 0 || !state.ownerReady || composerPhase !== "idle";
+  const canStartFreshSession =
+    state.bootstrapLoaded &&
+    !state.currentSessionId &&
+    state.connectionReason === "idle" &&
+    state.connectionStatus !== "error";
+  const sendDisabled =
+    draftInput.trim().length === 0 ||
+    (!state.bootstrapLoaded && !canStartFreshSession) ||
+    composerPhase !== "idle";
   const resourceActionsDisabled =
-    !state.ownerReady ||
-    (state.sessionState.activeTurn !== null && !state.sessionState.activeTurn.completed);
+    !state.bootstrapLoaded ||
+    state.sessionState.streamingDraft?.status === "streaming";
   const sessionChannelGroups = useMemo(
     () => buildSessionChannelGroups(sessionListState.items),
     [sessionListState.items],
@@ -830,6 +847,9 @@ export function MainShell(props: MainShellProps) {
           name: item.provider,
           display_name: item.display_name || catalogItem?.display_name || item.provider,
           backend: item.backend || catalogItem?.backend || "",
+          builtin: item.builtin ?? undefined,
+          editable: item.editable ?? undefined,
+          deletable: item.deletable ?? undefined,
           api_base_editable: item.api_base_editable ?? catalogItem?.api_base_editable ?? false,
           default_api_base: item.default_api_base ?? catalogItem?.default_api_base ?? null,
         };
@@ -906,11 +926,8 @@ export function MainShell(props: MainShellProps) {
     if (!shouldFollowThreadRef.current) {
       return;
     }
-    scroller.scrollTo({
-      top: scroller.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [showHomePrototype, state.sessionState.messages, state.sessionState.activeTurn]);
+    scrollElementToBottom(scroller);
+  }, [showHomePrototype, state.sessionState.messages, state.sessionState.streamingDraft]);
 
   useEffect(() => {
     const scroller = threadScrollerRef.current;
@@ -922,10 +939,7 @@ export function MainShell(props: MainShellProps) {
       if (!shouldFollowThreadRef.current) {
         return;
       }
-      scroller.scrollTo({
-        top: scroller.scrollHeight,
-        behavior: "smooth",
-      });
+      scrollElementToBottom(scroller);
     });
     observer.observe(content);
     return () => {
@@ -993,6 +1007,28 @@ export function MainShell(props: MainShellProps) {
       window.clearTimeout(timer);
     };
   }, [sessionManagerOpen, sessionManagerRendered]);
+
+  useEffect(() => {
+    if (!pendingSessionManagerSelection) {
+      return;
+    }
+    if (state.currentSessionId === pendingSessionManagerSelection) {
+      setPendingSessionManagerSelection(null);
+      closeSessionManager();
+      return;
+    }
+    if (
+      sessionListState.error &&
+      sessionListState.bindingSessionId !== pendingSessionManagerSelection
+    ) {
+      setPendingSessionManagerSelection(null);
+    }
+  }, [
+    pendingSessionManagerSelection,
+    sessionListState.bindingSessionId,
+    sessionListState.error,
+    state.currentSessionId,
+  ]);
 
   useEffect(() => {
     if (!modelSettingsRendered) {
@@ -1078,8 +1114,6 @@ export function MainShell(props: MainShellProps) {
     setRemoteFeedback(null);
     setBannerNotification(null);
     processedNotificationKeyRef.current = null;
-    processedTaskFeedbackRef.current = null;
-    processedSkillFeedbackRef.current = null;
   }, [activeRemoteId, state.currentSessionId]);
 
   useEffect(() => {
@@ -1137,182 +1171,6 @@ export function MainShell(props: MainShellProps) {
     processedNotificationKeyRef.current = null;
     setBannerNotification(null);
   }
-
-  useEffect(() => {
-    const latestProviderEvent = state.eventLog.find(
-      (event) =>
-        event.type === "provider_list" ||
-        event.type === "provider_settings_updated" ||
-        event.type === "provider_updated" ||
-        event.type === "active_provider_changed" ||
-        event.type === "runtime_reloaded" ||
-        (event.type === "error" &&
-          (event.command === "update_provider" ||
-            event.command === "set_provider_settings" ||
-            event.command === "set_active_provider" ||
-            event.command === "reload_runtime")),
-    );
-    if (!latestProviderEvent) {
-      return;
-    }
-    const triggerAutoReload = (message: string, failureMessage: string) => {
-      setProviderReloading(true);
-      setProviderSettingsFeedback({
-        tone: "success",
-        message,
-      });
-      void actions.reloadRuntime().then((ok) => {
-        if (!ok) {
-          setProviderReloading(false);
-          setProviderSettingsFeedback({
-            tone: "error",
-            message: failureMessage,
-          });
-        }
-      });
-    };
-    if (latestProviderEvent.type === "provider_list") {
-      return;
-    }
-    if (latestProviderEvent.type === "provider_settings_updated") {
-      setProviderSettingsBusyProvider(null);
-      if (latestProviderEvent.requires_runtime_reload) {
-        triggerAutoReload(
-          "Provider 设置已保存，正在自动 Reload Runtime…",
-          "Provider 设置已保存，但自动 Reload Runtime 失败。",
-        );
-        return;
-      }
-      setProviderSettingsFeedback({
-        tone: "success",
-        message: "Provider 设置已保存。",
-      });
-      return;
-    }
-    if (latestProviderEvent.type === "provider_updated") {
-      setProviderSettingsBusyProvider(null);
-      if (latestProviderEvent.requires_runtime_reload) {
-        triggerAutoReload(
-          "Provider 设置已保存，正在自动 Reload Runtime…",
-          "Provider 设置已保存，但自动 Reload Runtime 失败。",
-        );
-        return;
-      }
-      setProviderSettingsFeedback({
-        tone: "success",
-        message: "Provider 设置已保存。",
-      });
-      return;
-    }
-    if (latestProviderEvent.type === "active_provider_changed") {
-      setProviderActivationBusyProvider(null);
-      if (latestProviderEvent.requires_runtime_reload) {
-        triggerAutoReload(
-          "当前模型已切换，正在自动 Reload Runtime…",
-          "当前模型已切换，但自动 Reload Runtime 失败。",
-        );
-        return;
-      }
-      setProviderSettingsFeedback({
-        tone: "success",
-        message: "当前模型已切换。",
-      });
-      return;
-    }
-    if (latestProviderEvent.type === "runtime_reloaded") {
-      setProviderReloading(false);
-      setProviderSettingsFeedback({ tone: "success", message: "Runtime 已重新加载。" });
-      return;
-    }
-    setProviderSettingsBusyProvider(null);
-    setProviderActivationBusyProvider(null);
-    setProviderReloading(false);
-    const fieldMessage =
-      latestProviderEvent.fields && latestProviderEvent.fields.length > 0
-        ? latestProviderEvent.fields.map((field) => `${field.field}: ${field.message}`).join("；")
-        : "";
-    setProviderSettingsFeedback({
-      tone: "error",
-      message:
-        latestProviderEvent.code === "runtime_reload_busy"
-          ? "当前有进行中的对话，暂时不能 Reload Runtime。"
-          :
-        fieldMessage ||
-        (typeof latestProviderEvent.message === "string" && latestProviderEvent.message.trim().length > 0
-          ? latestProviderEvent.message
-          : "Provider 设置操作失败。"),
-    });
-  }, [state.eventLog]);
-
-  useEffect(() => {
-    const latestTaskEvent = state.eventLog.find(
-      (event) =>
-        event.type === "resource_action_result" &&
-        event.resource === "task" &&
-        event.action === "delete" &&
-        event.session_id === state.currentSessionId,
-    );
-    if (!latestTaskEvent) {
-      return;
-    }
-    const feedbackKey = [
-      latestTaskEvent.session_id || "",
-      latestTaskEvent.task_id || "",
-      latestTaskEvent.ok ? "ok" : "error",
-      typeof latestTaskEvent.message === "string" ? latestTaskEvent.message : "",
-    ].join("::");
-    if (processedTaskFeedbackRef.current === feedbackKey) {
-      return;
-    }
-    processedTaskFeedbackRef.current = feedbackKey;
-    setPendingTaskId(null);
-    if (latestTaskEvent.ok) {
-      setTaskFeedback(null);
-      return;
-    }
-    setTaskFeedback({
-      tone: "error",
-      message:
-        typeof latestTaskEvent.message === "string" && latestTaskEvent.message.trim().length > 0
-          ? latestTaskEvent.message
-          : "任务删除失败。",
-    });
-  }, [state.currentSessionId, state.eventLog]);
-
-  useEffect(() => {
-    const latestSkillEvent = state.eventLog.find(
-      (event) =>
-        event.type === "resource_action_result" &&
-        event.resource === "skill" &&
-        event.action === "uninstall" &&
-        event.session_id === state.currentSessionId,
-    );
-    if (!latestSkillEvent) {
-      return;
-    }
-    const feedbackKey = [
-      latestSkillEvent.session_id || "",
-      latestSkillEvent.skill_name || "",
-      latestSkillEvent.ok ? "ok" : "error",
-      typeof latestSkillEvent.message === "string" ? latestSkillEvent.message : "",
-    ].join("::");
-    if (processedSkillFeedbackRef.current === feedbackKey) {
-      return;
-    }
-    processedSkillFeedbackRef.current = feedbackKey;
-    setPendingSkillName(null);
-    if (latestSkillEvent.ok) {
-      setSkillFeedback(null);
-      return;
-    }
-    setSkillFeedback({
-      tone: "error",
-      message:
-        typeof latestSkillEvent.message === "string" && latestSkillEvent.message.trim().length > 0
-          ? latestSkillEvent.message
-          : "Skill 卸载失败。",
-    });
-  }, [state.currentSessionId, state.eventLog]);
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) {
@@ -1574,36 +1432,32 @@ export function MainShell(props: MainShellProps) {
       return;
     }
 
-    let scheduleCommand:
-      | { type: string; payload: Record<string, unknown> }
-      | null = null;
+    let schedule: TaskSchedule | null = null;
     if (taskModal.scheduleMode === "after") {
       const afterSeconds = Number(taskModal.afterSeconds);
       if (!Number.isFinite(afterSeconds) || afterSeconds <= 0) {
         setTaskFormError("延时秒数必须大于 0。");
         return;
       }
-      scheduleCommand = {
-        type: taskModal.mode === "create" ? "task_create_after" : "task_reschedule_after",
-        payload: { after_seconds: Math.floor(afterSeconds) },
-      };
+      schedule = { kind: "at", at_ms: Date.now() + Math.floor(afterSeconds) * 1000 };
     } else if (taskModal.scheduleMode === "at") {
       if (!taskModal.at.trim()) {
         setTaskFormError("请选择具体执行时间。");
         return;
       }
-      scheduleCommand = {
-        type: taskModal.mode === "create" ? "task_create_at" : "task_reschedule_at",
-        payload: { at: new Date(taskModal.at).toISOString() },
-      };
+      schedule = { kind: "at", at_ms: new Date(taskModal.at).getTime() };
     } else if (taskModal.scheduleMode === "daily") {
       if (!taskModal.dailyTime.trim()) {
         setTaskFormError("请输入每日执行时间。");
         return;
       }
-      scheduleCommand = {
-        type: taskModal.mode === "create" ? "task_create_daily" : "task_reschedule_daily",
-        payload: { daily_time: taskModal.dailyTime.trim() },
+      const [hourRaw, minuteRaw] = taskModal.dailyTime.trim().split(":");
+      const hour = Math.min(23, Math.max(0, Number(hourRaw) || 0));
+      const minute = Math.min(59, Math.max(0, Number(minuteRaw) || 0));
+      schedule = {
+        kind: "cron",
+        expr: `${minute} ${hour} * * *`,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
       };
     } else {
       const everySeconds = Number(taskModal.everySeconds);
@@ -1611,18 +1465,15 @@ export function MainShell(props: MainShellProps) {
         setTaskFormError("循环秒数必须大于 0。");
         return;
       }
-      scheduleCommand = {
-        type: taskModal.mode === "create" ? "task_create_every" : "task_reschedule_every",
-        payload: { every_seconds: Math.floor(everySeconds) },
-      };
+      schedule = { kind: "every", every_ms: Math.floor(everySeconds) * 1000 };
     }
 
     if (taskModal.mode === "create") {
-      const ok = await actions.sendResourceCommand({
-        type: scheduleCommand.type as never,
-        session_id: state.currentSessionId,
+      const ok = await actions.createTask({
         instruction,
-        ...scheduleCommand.payload,
+        schedule,
+        sourceSessionKey: state.currentSessionId,
+        targetChannels: [],
       });
       if (ok) {
         setTaskModal(null);
@@ -1641,45 +1492,29 @@ export function MainShell(props: MainShellProps) {
     }
     let ok = true;
     if (instruction !== currentTask.instruction) {
-      ok = await actions.sendResourceCommand({
-        type: "task_update_instruction",
-        session_id: state.currentSessionId,
-        task_id: taskModal.taskId,
+      ok = await actions.updateTask(taskModal.taskId, {
         instruction,
       });
       if (!ok) {
         return;
       }
     }
-    ok = await actions.sendResourceCommand({
-      type: scheduleCommand.type as never,
-      session_id: state.currentSessionId,
-      task_id: taskModal.taskId,
-      ...scheduleCommand.payload,
-    });
+    ok = await actions.updateTask(taskModal.taskId, { schedule });
     if (ok) {
       setTaskModal(null);
     }
   }
 
   async function handleTaskToggle(task: SidebarTaskItem) {
-    await actions.sendResourceCommand({
-      type: task.enabled ? "task_disable" : "task_enable",
-      session_id: state.currentSessionId,
-      task_id: task.id,
-    });
+    await (task.enabled ? actions.disableTask(task.id) : actions.enableTask(task.id));
   }
 
   async function handleTaskDelete(task: SidebarTaskItem) {
     setPendingTaskId(task.id);
     setTaskFeedback(null);
-    const ok = await actions.sendResourceCommand({
-      type: "task_delete",
-      session_id: state.currentSessionId,
-      task_id: task.id,
-    });
+    const ok = await actions.deleteTask(task.id);
+    setPendingTaskId(null);
     if (!ok) {
-      setPendingTaskId(null);
       setTaskFeedback({
         tone: "error",
         message: `任务删除请求未发出：${task.title || task.id}`,
@@ -1693,11 +1528,7 @@ export function MainShell(props: MainShellProps) {
       if (!uploadToken) {
         return;
       }
-      const ok = await actions.sendResourceCommand({
-        type: "skill_install",
-        session_id: state.currentSessionId,
-        upload_token: uploadToken,
-      });
+      const ok = await actions.installSkill({ uploadToken });
       if (ok) {
         setSkillModalOpen(false);
       }
@@ -1707,11 +1538,7 @@ export function MainShell(props: MainShellProps) {
       setSkillForm((current) => ({ ...current, error: "请输入 Skill 来源，或选择一个 zip 包。" }));
       return;
     }
-    const ok = await actions.sendResourceCommand({
-      type: "skill_install",
-      session_id: state.currentSessionId,
-      source: skillForm.source.trim(),
-    });
+    const ok = await actions.installSkill({ source: skillForm.source.trim() });
     if (ok) {
       setSkillModalOpen(false);
     }
@@ -1720,13 +1547,9 @@ export function MainShell(props: MainShellProps) {
   async function handleSkillUninstall(name: string) {
     setPendingSkillName(name);
     setSkillFeedback(null);
-    const ok = await actions.sendResourceCommand({
-      type: "skill_uninstall",
-      session_id: state.currentSessionId,
-      skill_name: name,
-    });
+    const ok = await actions.uninstallSkill(name);
+    setPendingSkillName(null);
     if (!ok) {
-      setPendingSkillName(null);
       setSkillFeedback({
         tone: "error",
         message: `Skill 卸载请求未发出：${name}`,
@@ -1753,12 +1576,7 @@ export function MainShell(props: MainShellProps) {
         return;
       }
       for (const entry of entries) {
-        const ok = await actions.sendResourceCommand({
-          type: "mcp_create",
-          session_id: state.currentSessionId,
-          mcp_name: entry.name,
-          mcp: entry.config,
-        });
+        const ok = await actions.createMcp({ mcp: { name: entry.name, ...entry.config } });
         if (!ok) {
           return;
         }
@@ -1793,34 +1611,21 @@ export function MainShell(props: MainShellProps) {
       env,
       headers,
     };
-    const ok = await actions.sendResourceCommand({
-      type: "mcp_update",
-      session_id: state.currentSessionId,
-      mcp_name: mcpModal.name.trim(),
-      mcp: commandPayload,
-    });
+    const ok = await actions.updateMcp(mcpModal.name.trim(), { mcp: commandPayload });
     if (ok) {
       setMcpModal(null);
     }
   }
 
   async function handleMcpToggle(item: SidebarMcpItem) {
-    await actions.sendResourceCommand({
-      type: item.enabled ? "mcp_disable" : "mcp_enable",
-      session_id: state.currentSessionId,
-      mcp_name: item.name,
-    });
+    await (item.enabled ? actions.disableMcp(item.name) : actions.enableMcp(item.name));
   }
 
   async function handleMcpDelete(item: SidebarMcpItem) {
     if (!window.confirm(`确认删除 MCP “${item.name}”吗？`)) {
       return;
     }
-    await actions.sendResourceCommand({
-      type: "mcp_delete",
-      session_id: state.currentSessionId,
-      mcp_name: item.name,
-    });
+    await actions.deleteMcp(item.name);
   }
 
   return (
@@ -1959,7 +1764,7 @@ export function MainShell(props: MainShellProps) {
           >
             {state.sidebar.tasks.length === 0
               ? renderEmptyState(
-                state.ownerReady && state.sidebarReady
+                state.bootstrapLoaded && state.sidebarReady
                   ? "当前远端还没有可显示的自动任务。"
                   : "等待当前 remote 同步任务列表。",
               )
@@ -2058,7 +1863,7 @@ export function MainShell(props: MainShellProps) {
             <div className="sidebar-entity-list">
               {state.sidebar.skills.length === 0
                 ? renderEmptyState(
-                  state.ownerReady && state.sidebarReady
+                  state.bootstrapLoaded && state.sidebarReady
                     ? "当前远端 skills 目录还是空的。"
                     : "等待当前 remote 同步 Skills。",
                 )
@@ -2102,7 +1907,7 @@ export function MainShell(props: MainShellProps) {
             <div className="sidebar-entity-list">
               {state.sidebar.mcpServers.length === 0
                 ? renderEmptyState(
-                  state.ownerReady && state.sidebarReady
+                  state.bootstrapLoaded && state.sidebarReady
                     ? "当前远端配置里还没有 MCP server。"
                     : "等待当前 remote 同步 MCP。",
                 )
@@ -2479,8 +2284,8 @@ export function MainShell(props: MainShellProps) {
                             type="button"
                             className="session-manager-select"
                             onClick={() => {
+                              setPendingSessionManagerSelection(session.sessionId);
                               void selectSession(session.sessionId);
-                              closeSessionManager();
                             }}
                             disabled={isBinding}
                           >
@@ -2510,6 +2315,9 @@ export function MainShell(props: MainShellProps) {
                                 sessionListState.deletingSessionId === session.sessionId
                               }
                               onClick={() => {
+                                if (isActive) {
+                                  setPendingSessionManagerSelection(null);
+                                }
                                 void actions.deleteRemoteSession(session.sessionId);
                               }}
                             >

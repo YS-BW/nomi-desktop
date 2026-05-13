@@ -108,6 +108,38 @@ function normalizeRemoteEntry(entry: Partial<DesktopRemoteEntry> | undefined): D
   };
 }
 
+function normalizeRemoteCatalog(catalog: Partial<DesktopRemoteCatalog> | undefined): DesktopRemoteCatalog {
+  const remotes = Array.isArray(catalog?.remotes)
+    ? catalog.remotes.map((entry) => normalizeRemoteEntry(entry))
+    : [];
+  if (remotes.length === 0) {
+    const fallback = createDefaultRemoteEntry();
+    return { activeRemoteId: fallback.id, remotes: [fallback] };
+  }
+  const byId = new Map<string, DesktopRemoteEntry>();
+  for (const entry of remotes) {
+    const existing = byId.get(entry.id);
+    byId.set(
+      entry.id,
+      existing
+        ? {
+            ...existing,
+            ...entry,
+            sessionIds: Array.from(new Set([...existing.sessionIds, ...entry.sessionIds])),
+          }
+        : entry,
+    );
+  }
+  const normalizedRemotes = Array.from(byId.values());
+  const activeRemoteId = catalog?.activeRemoteId || normalizedRemotes[0].id;
+  return {
+    activeRemoteId: normalizedRemotes.some((entry) => entry.id === activeRemoteId)
+      ? activeRemoteId
+      : normalizedRemotes[0].id,
+    remotes: normalizedRemotes,
+  };
+}
+
 export function loadRemoteCatalog(): DesktopRemoteCatalog {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) {
@@ -117,14 +149,7 @@ export function loadRemoteCatalog(): DesktopRemoteCatalog {
   try {
     const parsed = JSON.parse(raw) as Partial<DesktopRemoteCatalog> & Partial<DesktopConnectionProfile>;
     if (Array.isArray(parsed.remotes) && parsed.remotes.length > 0) {
-      const remotes = parsed.remotes.map((entry) => normalizeRemoteEntry(entry));
-      const activeRemoteId = parsed.activeRemoteId || remotes[0].id;
-      return {
-        activeRemoteId: remotes.some((entry) => entry.id === activeRemoteId)
-          ? activeRemoteId
-          : remotes[0].id,
-        remotes,
-      };
+      return normalizeRemoteCatalog(parsed);
     }
     const entry = normalizeRemoteEntry({
       id: parsed.clientId || undefined,
@@ -139,7 +164,7 @@ export function loadRemoteCatalog(): DesktopRemoteCatalog {
 }
 
 export function saveRemoteCatalog(catalog: DesktopRemoteCatalog): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(catalog));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeRemoteCatalog(catalog)));
 }
 
 export function loadProfile(): DesktopConnectionProfile {
@@ -176,6 +201,7 @@ export function upsertRemoteEntry(
     id?: string;
     profile: DesktopConnectionProfile;
     sessionIds?: string[];
+    activate?: boolean;
   },
 ): DesktopRemoteCatalog {
   const id = entry.id || entry.profile.clientId;
@@ -198,10 +224,10 @@ export function upsertRemoteEntry(
   };
   const index = catalog.remotes.findIndex((item) => item.id === id);
   const remotes = index >= 0 ? catalog.remotes.map((item, i) => (i === index ? nextEntry : item)) : [...catalog.remotes, nextEntry];
-  return {
-    activeRemoteId: id,
+  return normalizeRemoteCatalog({
+    activeRemoteId: entry.activate ? id : catalog.activeRemoteId,
     remotes,
-  };
+  });
 }
 
 export function deleteRemoteEntry(catalog: DesktopRemoteCatalog, remoteId: string): DesktopRemoteCatalog {
@@ -353,7 +379,7 @@ export async function uploadRemoteSkillZip(
   const form = new FormData();
   form.append("file", file);
   const response = await (isTauriRuntime()
-    ? fetch(`http://${profile.host}:${profile.port}/skills/upload`, {
+    ? fetch(`http://${profile.host}:${profile.port}/v1/skills/uploads`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${profile.token}`,

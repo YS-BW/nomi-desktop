@@ -319,7 +319,6 @@ fn clear_nomi_runtime_state() -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_websocket::init())
         .invoke_handler(tauri::generate_handler![
             load_remote_defaults,
             load_desktop_sidebar_data,

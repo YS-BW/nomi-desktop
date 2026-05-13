@@ -31,6 +31,12 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function readObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function parseLegacyDate(value: unknown): number | null {
   const raw = readString(value);
   if (!raw) {
@@ -68,6 +74,37 @@ export function normalizeRemoteSessionItem(raw: Record<string, unknown>): Remote
     archived: raw.archived === true,
     source: readString(raw.source) ?? readString(raw.path),
   };
+}
+
+export function readSessionIdFromEvent(raw: Record<string, unknown>): string | null {
+  const directSessionId = readString(raw.session_id);
+  if (directSessionId) {
+    return directSessionId;
+  }
+  const nestedSession = readObject(raw.session);
+  return nestedSession ? readString(nestedSession.session_id) || readString(nestedSession.key) : null;
+}
+
+export function normalizeSessionCreatedEvent(raw: Record<string, unknown>): RemoteSessionItem | null {
+  const nestedSession = readObject(raw.session);
+  const sessionId = readSessionIdFromEvent(raw);
+  if (!sessionId) {
+    return null;
+  }
+  return normalizeRemoteSessionItem({
+    ...(nestedSession || {}),
+    key: readString(nestedSession?.key) || sessionId,
+    session_id: sessionId,
+    title: readString(nestedSession?.title) ?? readString(raw.title),
+    created_at_ms: readNumber(nestedSession?.created_at_ms) ?? readNumber(raw.created_at_ms),
+    updated_at_ms:
+      readNumber(nestedSession?.updated_at_ms) ??
+      readNumber(raw.updated_at_ms) ??
+      readNumber(raw.created_at_ms),
+    message_count: readNumber(nestedSession?.message_count) ?? readNumber(raw.message_count) ?? 0,
+    archived: nestedSession?.archived ?? raw.archived ?? false,
+    source: readString(nestedSession?.source) ?? readString(raw.source) ?? "remote",
+  });
 }
 
 export function mergeRemoteSessionItems(

@@ -1,32 +1,34 @@
 import { createMessageId } from "../lib/ids";
 import type {
-  ActiveTurn,
+  BootstrapResponse,
   ConnectionReason,
+  CurrentThreadState,
   DesktopConnectionProfile,
   DesktopSidebarData,
-  DesktopSessionState,
   MessageItem,
   ProviderCatalog,
   ProviderStateItem,
   ProviderStateSnapshot,
-  RemoteEvent,
+  SessionMessage,
+  SessionMessagesResponse,
+  SseEventEnvelope,
 } from "../lib/types";
 
 export interface DesktopAppState {
   connectionStatus: "disconnected" | "connecting" | "connected" | "error";
   connectionDetail: string;
   connectionReason: ConnectionReason;
-  ownerReady: boolean;
-  readyReceived: boolean;
-  bindCompleted: boolean;
+  bootstrapLoaded: boolean;
+  eventsConnected: boolean;
+  needsResync: boolean;
   profile: DesktopConnectionProfile;
   currentSessionId: string;
-  sessionState: DesktopSessionState;
+  sessionState: CurrentThreadState;
   providerCatalog: ProviderCatalog | null;
   providerState: ProviderStateSnapshot | null;
   sidebar: DesktopSidebarData;
   sidebarReady: boolean;
-  eventLog: RemoteEvent[];
+  eventLog: SseEventEnvelope[];
   errorText: string | null;
 }
 
@@ -37,25 +39,23 @@ export type DesktopAction =
       status: DesktopAppState["connectionStatus"];
       detail: string;
       reason?: ConnectionReason;
-      readyReceived?: boolean;
-      bindCompleted?: boolean;
+      bootstrapLoaded?: boolean;
+      eventsConnected?: boolean;
     }
+  | { type: "bootstrap/loaded"; bootstrap: BootstrapResponse; host: string; port: string }
+  | { type: "events/connected"; connected: boolean }
   | { type: "session/current"; sessionId: string }
+  | { type: "messages/loaded"; response: SessionMessagesResponse }
+  | { type: "message/pendingUser"; sessionId: string; content: string }
   | { type: "sidebar/data"; data: DesktopSidebarData }
   | { type: "sidebar/reset" }
-  | { type: "message/user"; sessionId: string; content: string }
-  | { type: "event/received"; event: RemoteEvent }
+  | { type: "status/loaded"; status: Record<string, unknown> | null }
+  | { type: "provider/listLoaded"; providerCatalog?: ProviderCatalog | null; providerState: ProviderStateSnapshot }
+  | { type: "provider/stateLoaded"; providerState: ProviderStateSnapshot }
+  | { type: "thread/clear" }
+  | { type: "sse/received"; event: SseEventEnvelope }
+  | { type: "resync/handled" }
   | { type: "error/set"; message: string | null };
-
-function createSessionState(sessionId: string): DesktopSessionState {
-  return {
-    sessionId,
-    messages: [],
-    activeTurn: null,
-    lastStatus: null,
-    isBound: false,
-  };
-}
 
 function createSidebarState(): DesktopSidebarData {
   return {
@@ -65,22 +65,50 @@ function createSidebarState(): DesktopSidebarData {
   };
 }
 
-function deriveOwnerReady(readyReceived: boolean, bindCompleted: boolean): boolean {
-  return readyReceived && bindCompleted;
+function composeThreadMessages(thread: Omit<CurrentThreadState, "messages">): MessageItem[] {
+  const messages: MessageItem[] = [...thread.committedMessages];
+  if (thread.pendingUserMessage) {
+    messages.push(thread.pendingUserMessage);
+  }
+  if (thread.streamingDraft) {
+    messages.push(...thread.streamingDraft.progress);
+    messages.push(thread.streamingDraft);
+  }
+  return messages;
+}
+
+function createThreadState(sessionId: string): CurrentThreadState {
+  const base = {
+    sessionId,
+    committedMessages: [],
+    pendingUserMessage: null,
+    streamingDraft: null,
+    lastStatus: null,
+  };
+  return {
+    ...base,
+    messages: composeThreadMessages(base),
+  };
+}
+
+function withComposedMessages(thread: CurrentThreadState): CurrentThreadState {
+  return {
+    ...thread,
+    messages: composeThreadMessages(thread),
+  };
 }
 
 export function createInitialDesktopState(profile: DesktopConnectionProfile): DesktopAppState {
-  const sessionId = profile.defaultSessionId;
   return {
     connectionStatus: "disconnected",
     connectionDetail: "连接已断开",
     connectionReason: "idle",
-    ownerReady: false,
-    readyReceived: false,
-    bindCompleted: false,
+    bootstrapLoaded: false,
+    eventsConnected: false,
+    needsResync: false,
     profile,
-    currentSessionId: sessionId,
-    sessionState: createSessionState(sessionId),
+    currentSessionId: "",
+    sessionState: createThreadState(""),
     providerCatalog: null,
     providerState: null,
     sidebar: createSidebarState(),
@@ -90,50 +118,8 @@ export function createInitialDesktopState(profile: DesktopConnectionProfile): De
   };
 }
 
-function ensureActiveTurn(sessionState: DesktopSessionState, sessionId: string): ActiveTurn {
-  if (!sessionState.activeTurn || sessionState.activeTurn.sessionId !== sessionId) {
-    sessionState.activeTurn = {
-      sessionId,
-      draftText: "",
-      hasStream: false,
-      completed: false,
-      stopReason: null,
-      messageId: null,
-    };
-  }
-  return sessionState.activeTurn;
-}
-
-function ensureDraftMessage(sessionState: DesktopSessionState, sessionId: string): MessageItem {
-  const activeTurn = ensureActiveTurn(sessionState, sessionId);
-  if (activeTurn.messageId) {
-    return sessionState.messages.find((item) => item.id === activeTurn.messageId)!;
-  }
-  const message: MessageItem = {
-    id: createMessageId("assistant"),
-    kind: "assistant",
-    role: "assistant",
-    content: "",
-    sessionId,
-    status: "streaming",
-  };
-  sessionState.messages.push(message);
-  activeTurn.messageId = message.id;
-  return message;
-}
-
-function appendEventLog(state: DesktopAppState, event: RemoteEvent): void {
+function appendEventLog(state: DesktopAppState, event: SseEventEnvelope): void {
   state.eventLog = [event, ...state.eventLog].slice(0, 30);
-}
-
-function mergeProviderItem(
-  current: ProviderStateItem,
-  patch: ProviderStateItem,
-): ProviderStateItem {
-  return {
-    ...current,
-    ...patch,
-  };
 }
 
 function isMessageKind(value: unknown): value is MessageItem["kind"] {
@@ -143,18 +129,6 @@ function isMessageKind(value: unknown): value is MessageItem["kind"] {
     value === "progress" ||
     value === "task" ||
     value === "system"
-  );
-}
-
-function isMessageStatus(value: unknown): value is MessageItem["status"] {
-  return (
-    value === "history" ||
-    value === "sent" ||
-    value === "streaming" ||
-    value === "completed" ||
-    value === "interrupted" ||
-    value === "task_delivered" ||
-    value === "error"
   );
 }
 
@@ -169,7 +143,7 @@ function formatToolCallHint(message: Record<string, unknown>): string | null {
   const toolNames = (message.tool_calls as Array<Record<string, unknown>>)
     .map((toolCall) => {
       const directName = typeof toolCall.name === "string" ? toolCall.name : null;
-      if (directName && directName.trim()) {
+      if (directName?.trim()) {
         return directName.trim();
       }
       const functionName =
@@ -185,19 +159,26 @@ function formatToolCallHint(message: Record<string, unknown>): string | null {
   return `正在调用 ${toolNames.join("、")}`;
 }
 
-function normalizeHistoryMessage(
-  message: Record<string, unknown>,
+function normalizeSessionMessage(
+  message: SessionMessage | Record<string, unknown>,
   sessionId: string,
+  options?: { id?: string; status?: MessageItem["status"] },
 ): MessageItem {
-  const rawRole = typeof message.role === "string" ? message.role : "";
-  const toolHint = message.tool_hint === true;
-  const rawContent = String(message.content || "");
+  const raw = message as Record<string, unknown>;
+  const rawRole = typeof raw.role === "string" ? raw.role : "";
+  const toolHint = raw.tool_hint === true;
+  const rawContent =
+    typeof raw.content === "string"
+      ? raw.content
+      : raw.content === undefined || raw.content === null
+        ? ""
+        : JSON.stringify(raw.content);
   const trimmedContent = rawContent.trim();
-  const toolCallHint = formatToolCallHint(message);
+  const toolCallHint = formatToolCallHint(raw);
   let kind: MessageItem["kind"] = "system";
 
-  if (isMessageKind(message.kind)) {
-    kind = message.kind;
+  if (isMessageKind(raw.kind)) {
+    kind = raw.kind;
   } else if (rawRole === "tool") {
     kind = "progress";
   } else if (rawRole === "assistant" && toolCallHint && trimmedContent.length === 0) {
@@ -223,327 +204,460 @@ function normalizeHistoryMessage(
 
   return {
     id:
-      typeof message.id === "string" && message.id.trim().length > 0
-        ? message.id
-        : createMessageId(role || "history"),
+      options?.id ||
+      (typeof raw.id === "string" && raw.id.trim().length > 0
+        ? raw.id
+        : createMessageId(role || "message")),
     kind,
     role,
     content,
-    sessionId:
-      typeof message.session_id === "string" && message.session_id.trim().length > 0
-        ? message.session_id
-        : sessionId,
-    status: isMessageStatus(message.status) ? message.status : "history",
+    sessionId,
+    status: options?.status || "history",
   };
 }
 
-function replaceHistory(
-  sessionState: DesktopSessionState,
-  messages: Array<Record<string, unknown>>,
-): void {
-  const normalizedMessages = messages.map((message) =>
-    normalizeHistoryMessage(message, sessionState.sessionId),
-  );
-  const hasOptimisticLocalMessages = sessionState.messages.some(
-    (message) => message.status !== "history",
-  );
-  if (normalizedMessages.length === 0 && hasOptimisticLocalMessages) {
-    sessionState.activeTurn = null;
-    return;
-  }
-  sessionState.messages = normalizedMessages;
-  sessionState.activeTurn = null;
+function normalizeCommittedMessages(response: SessionMessagesResponse): CurrentThreadState["committedMessages"] {
+  return response.messages.map((message, index) => ({
+    ...normalizeSessionMessage(message, response.session_id, {
+      id: `${response.session_id}:${index}`,
+      status: "history",
+    }),
+    source: "history" as const,
+    index,
+  }));
 }
 
-export function desktopReducer(state: DesktopAppState, action: DesktopAction): DesktopAppState {
-  if (action.type === "profile/update") {
-    return {
-      ...state,
-      profile: action.profile,
-      providerCatalog: null,
-      providerState: null,
-      sidebar: createSidebarState(),
-      sidebarReady: false,
-    };
-  }
-  if (action.type === "connection/status") {
-    const readyReceived = action.readyReceived ?? state.readyReceived;
-    const bindCompleted = action.bindCompleted ?? state.bindCompleted;
-    const shouldResetSidebar = action.status !== "connected" || !deriveOwnerReady(readyReceived, bindCompleted);
-    return {
-      ...state,
-      connectionStatus: action.status,
-      connectionDetail: action.detail,
-      connectionReason: action.reason ?? state.connectionReason,
-      readyReceived,
-      bindCompleted,
-      ownerReady: deriveOwnerReady(readyReceived, bindCompleted),
-      providerCatalog: action.status === "connected" || readyReceived ? state.providerCatalog : null,
-      providerState: action.status === "connected" || readyReceived ? state.providerState : null,
-      sidebar: shouldResetSidebar ? createSidebarState() : state.sidebar,
-      sidebarReady: shouldResetSidebar ? false : state.sidebarReady,
-      errorText: action.status === "error" ? action.detail : null,
-    };
-  }
-  if (action.type === "session/current") {
-    return {
-      ...state,
-      currentSessionId: action.sessionId,
-      bindCompleted: false,
-      ownerReady: deriveOwnerReady(state.readyReceived, false),
-      sessionState: createSessionState(action.sessionId),
-      providerCatalog: state.providerCatalog,
-      providerState: state.providerState,
-      sidebar: createSidebarState(),
-      sidebarReady: false,
-    };
-  }
-  if (action.type === "sidebar/data") {
-    return {
-      ...state,
-      sidebar: action.data,
-      sidebarReady: true,
-    };
-  }
-  if (action.type === "sidebar/reset") {
-    return {
-      ...state,
-      sidebar: createSidebarState(),
-      sidebarReady: false,
-    };
-  }
-  if (action.type === "message/user") {
-    const nextSessionState: DesktopSessionState = {
-      ...state.sessionState,
-      sessionId: action.sessionId,
-      messages: [
-        ...state.sessionState.messages,
-        {
-          id: createMessageId("user"),
-          kind: "user",
-          role: "user",
-          content: action.content,
-          sessionId: action.sessionId,
-          status: "sent",
-        },
-      ],
-      activeTurn: null,
-    };
-    return {
-      ...state,
-      sessionState: nextSessionState,
-    };
-  }
-  if (action.type === "error/set") {
-    return { ...state, errorText: action.message };
-  }
-  if (action.type !== "event/received") {
-    return state;
+function shouldConfirmPending(pending: MessageItem | null, incoming: MessageItem): boolean {
+  return Boolean(
+    pending &&
+      incoming.kind === "user" &&
+      pending.sessionId === incoming.sessionId &&
+      pending.content.trim() === incoming.content.trim(),
+  );
+}
+
+function appendCommittedMessage(
+  thread: CurrentThreadState,
+  sessionId: string,
+  rawMessage: SessionMessage,
+  index?: number | null,
+): CurrentThreadState {
+  const normalized = normalizeSessionMessage(rawMessage, sessionId, {
+    id: typeof index === "number" ? `${sessionId}:${index}` : createMessageId("sse"),
+    status: "history",
+  });
+  const committed = {
+    ...normalized,
+    source: "sse" as const,
+    index: typeof index === "number" ? index : null,
+  };
+  const committedMessages = [...thread.committedMessages];
+  const existingById = committedMessages.findIndex((message) => message.id === committed.id);
+  if (existingById >= 0) {
+    committedMessages[existingById] = committed;
+  } else {
+    committedMessages.push(committed);
   }
 
-  const nextState: DesktopAppState = {
+  return withComposedMessages({
+    ...thread,
+    committedMessages,
+    pendingUserMessage: shouldConfirmPending(thread.pendingUserMessage, normalized)
+      ? null
+      : thread.pendingUserMessage,
+    streamingDraft:
+      normalized.kind === "assistant" && thread.streamingDraft
+        ? null
+        : thread.streamingDraft,
+  });
+}
+
+function mergeProviderItem(
+  current: ProviderStateItem,
+  patch: ProviderStateItem,
+): ProviderStateItem {
+  return {
+    ...current,
+    ...patch,
+  };
+}
+
+function updateProviderSettings(
+  providerState: ProviderStateSnapshot | null,
+  settings: ProviderStateItem,
+): ProviderStateSnapshot | null {
+  if (!providerState) {
+    return providerState;
+  }
+  const exists = providerState.providers.some((item) => item.provider === settings.provider);
+  return {
+    ...providerState,
+    providers: exists
+      ? providerState.providers.map((item) =>
+          item.provider === settings.provider ? mergeProviderItem(item, settings) : item,
+        )
+      : [...providerState.providers, settings],
+  };
+}
+
+function updateSseState(state: DesktopAppState, event: SseEventEnvelope): DesktopAppState {
+  const data = (event.data || {}) as Record<string, unknown>;
+  const next: DesktopAppState = {
     ...state,
     sessionState: {
       ...state.sessionState,
+      committedMessages: [...state.sessionState.committedMessages],
       messages: [...state.sessionState.messages],
-      activeTurn: state.sessionState.activeTurn
-        ? { ...state.sessionState.activeTurn }
+      pendingUserMessage: state.sessionState.pendingUserMessage
+        ? { ...state.sessionState.pendingUserMessage }
+        : null,
+      streamingDraft: state.sessionState.streamingDraft
+        ? {
+            ...state.sessionState.streamingDraft,
+            progress: [...state.sessionState.streamingDraft.progress],
+          }
         : null,
     },
   };
-  const { event } = action;
-  appendEventLog(nextState, event);
-
-  if (event.session_id && event.session_id !== nextState.sessionState.sessionId) {
-    return nextState;
-  }
+  appendEventLog(next, event);
 
   switch (event.type) {
-    case "ready":
-      nextState.connectionStatus = "connecting";
-      nextState.connectionDetail = `已连接到 ${event.host}:${event.port}`;
-      nextState.connectionReason = "idle";
-      nextState.readyReceived = true;
-      nextState.bindCompleted = false;
-      nextState.ownerReady = false;
-      nextState.providerCatalog = event.provider_catalog || null;
-      nextState.providerState = event.provider_state || null;
-      nextState.errorText = null;
-      return nextState;
-    case "session_bound":
-      nextState.sessionState.isBound = true;
-      nextState.currentSessionId = event.session_id || nextState.currentSessionId;
-      nextState.connectionStatus = "connected";
-      nextState.connectionReason = "idle";
-      nextState.bindCompleted = true;
-      nextState.ownerReady = deriveOwnerReady(nextState.readyReceived, nextState.bindCompleted);
-      return nextState;
-    case "provider_state_snapshot":
-      nextState.providerState = event.provider_state || null;
-      return nextState;
-    case "provider_list":
-      nextState.providerState = event.provider_list || null;
-      nextState.errorText = null;
-      return nextState;
-    case "provider_settings_updated":
-    case "provider_updated":
-      if (!nextState.providerState || !event.settings?.provider) {
-        return nextState;
+    case "runtime.connected":
+      next.eventsConnected = true;
+      next.connectionStatus = "connected";
+      next.connectionReason = "idle";
+      next.connectionDetail = "已连接到当前 remote";
+      if (data.provider_state) {
+        next.providerState = data.provider_state as ProviderStateSnapshot;
       }
-      if (!nextState.providerState.providers.some((item) => item.provider === event.settings?.provider)) {
-        nextState.providerState = {
-          ...nextState.providerState,
-          providers: [...nextState.providerState.providers, event.settings],
-        };
-        nextState.errorText = null;
-        return nextState;
-      }
-      nextState.providerState = {
-        ...nextState.providerState,
-        providers: nextState.providerState.providers.map((item) =>
-          item.provider === event.settings?.provider
-            ? mergeProviderItem(item, event.settings!)
-            : item,
-        ),
-      };
-      nextState.errorText = null;
-      return nextState;
-    case "active_provider_changed":
-      if (!event.active || !nextState.providerState) {
-        return nextState;
-      }
-      nextState.providerState = {
-        ...nextState.providerState,
-        active: event.active,
-        apply_mode: event.apply_mode || nextState.providerState.apply_mode,
-      };
-      nextState.errorText = null;
-      return nextState;
-    case "runtime_reloaded":
-      if (event.provider_state) {
-        nextState.providerState = event.provider_state;
-      } else if (nextState.providerState && event.apply_mode) {
-        nextState.providerState = {
-          ...nextState.providerState,
-          apply_mode: event.apply_mode,
-        };
-      }
-      if (event.active && nextState.providerState) {
-        nextState.providerState = {
-          ...nextState.providerState,
-          active: event.active,
-        };
-      }
-      nextState.errorText = null;
-      return nextState;
-    case "turn_started":
-      ensureActiveTurn(nextState.sessionState, event.session_id || nextState.currentSessionId);
-      return nextState;
-    case "progress":
-      nextState.sessionState.messages.push({
-        id: createMessageId("progress"),
-        kind: "progress",
-        role: event.tool_hint ? "tool_hint" : "progress",
-        content: String(event.content || ""),
-        sessionId: event.session_id || nextState.currentSessionId,
-        status: "completed",
+      next.errorText = null;
+      return next;
+    case "runtime.status_changed":
+      next.sessionState = withComposedMessages({
+        ...next.sessionState,
+        lastStatus: (data.status || data) as Record<string, unknown>,
       });
-      return nextState;
-    case "delta": {
-      const sessionId = event.session_id || nextState.currentSessionId;
-      const draft = ensureDraftMessage(nextState.sessionState, sessionId);
-      const activeTurn = ensureActiveTurn(nextState.sessionState, sessionId);
-      activeTurn.hasStream = true;
-      activeTurn.draftText += String(event.content || "");
-      draft.content = activeTurn.draftText;
-      draft.status = "streaming";
-      return nextState;
+      return next;
+    case "runtime.reloaded":
+      if (data.provider_state) {
+        next.providerState = data.provider_state as ProviderStateSnapshot;
+      }
+      if (data.active && next.providerState) {
+        next.providerState = {
+          ...next.providerState,
+          active: data.active as ProviderStateSnapshot["active"],
+        };
+      }
+      next.errorText = null;
+      return next;
+    case "runtime.resync_required":
+      next.needsResync = true;
+      return next;
+    case "session.message_appended": {
+      const sessionId = typeof data.session_id === "string" ? data.session_id : "";
+      if (!sessionId || sessionId !== next.currentSessionId || !data.message || typeof data.message !== "object") {
+        return next;
+      }
+      next.sessionState = appendCommittedMessage(
+        next.sessionState,
+        sessionId,
+        data.message as SessionMessage,
+        typeof data.index === "number" ? data.index : null,
+      );
+      return next;
     }
-    case "message": {
-      const sessionId = event.session_id || nextState.currentSessionId;
-      const activeTurn = ensureActiveTurn(nextState.sessionState, sessionId);
-      if (activeTurn.messageId) {
-        const target = nextState.sessionState.messages.find(
-          (item) => item.id === activeTurn.messageId,
-        );
-        if (target) {
-          target.content = String(event.content || target.content);
-          target.status = "completed";
-        }
-      } else {
-        nextState.sessionState.messages.push({
+    case "turn.started": {
+      const sessionId = typeof data.session_id === "string" ? data.session_id : next.currentSessionId;
+      if (!sessionId || sessionId !== next.currentSessionId) {
+        return next;
+      }
+      next.sessionState = withComposedMessages({
+        ...next.sessionState,
+        streamingDraft: {
           id: createMessageId("assistant"),
           kind: "assistant",
           role: "assistant",
-          content: String(event.content || ""),
+          content: "",
           sessionId,
-          status: "completed",
-        });
-      }
-      return nextState;
+          status: "streaming",
+          turnId: typeof data.turn_id === "string" ? data.turn_id : null,
+          progress: [],
+          stopReason: null,
+        },
+      });
+      return next;
     }
-    case "turn_completed":
-      if (nextState.sessionState.activeTurn) {
-        nextState.sessionState.activeTurn.completed = true;
-        nextState.sessionState.activeTurn.stopReason = String(event.stop_reason || "completed");
-        if (nextState.sessionState.activeTurn.messageId) {
-          const target = nextState.sessionState.messages.find(
-            (item) => item.id === nextState.sessionState.activeTurn?.messageId,
-          );
-          if (target && target.status === "streaming") {
-            target.status = event.stop_reason === "interrupted" ? "interrupted" : "completed";
-          }
-        }
+    case "turn.progress":
+    case "turn.delta": {
+      const sessionId = typeof data.session_id === "string" ? data.session_id : next.currentSessionId;
+      if (!sessionId || sessionId !== next.currentSessionId) {
+        return next;
       }
-      return nextState;
-    case "interrupt_result":
-      nextState.sessionState.lastStatus = event.result || null;
-      return nextState;
-    case "status_result":
-      nextState.sessionState.lastStatus = event.snapshot || null;
-      return nextState;
-    case "history_snapshot":
-      replaceHistory(nextState.sessionState, event.messages || []);
-      return nextState;
-    case "sidebar_snapshot":
-      if (event.sidebar) {
-        nextState.sidebar = event.sidebar;
-        nextState.sidebarReady = true;
+      const content = String(data.content || "");
+      const draft =
+        next.sessionState.streamingDraft ||
+        ({
+          id: createMessageId("assistant"),
+          kind: "assistant",
+          role: "assistant",
+          content: "",
+          sessionId,
+          status: "streaming",
+          turnId: typeof data.turn_id === "string" ? data.turn_id : null,
+          progress: [],
+          stopReason: null,
+        } as CurrentThreadState["streamingDraft"]);
+      if (!draft) {
+        return next;
       }
-      return nextState;
-    case "resource_action_result":
-      if (event.ok) {
-        nextState.errorText = null;
-        if (event.action === "clear_remote_runtime") {
-          nextState.sessionState = createSessionState(nextState.currentSessionId);
-        }
+      if (event.type === "turn.progress") {
+        draft.progress = [
+          ...draft.progress,
+          {
+            id: createMessageId("progress"),
+            kind: "progress",
+            role: data.tool_hint ? "tool_hint" : "progress",
+            content,
+            sessionId,
+            status: "completed",
+          },
+        ];
       } else {
-        nextState.errorText = String(event.message || "资源操作失败");
+        draft.content += content;
+        draft.status = "streaming";
       }
-      return nextState;
-    case "task_delivered":
-      nextState.sessionState.messages.push({
+      next.sessionState = withComposedMessages({
+        ...next.sessionState,
+        streamingDraft: draft,
+      });
+      return next;
+    }
+    case "turn.completed":
+    case "turn.failed":
+    case "turn.interrupted":
+    case "turn.stream_end": {
+      if (!next.sessionState.streamingDraft) {
+        return next;
+      }
+      const stopped =
+        event.type === "turn.interrupted"
+          ? "interrupted"
+          : event.type === "turn.failed"
+            ? "failed"
+            : typeof data.stop_reason === "string"
+              ? data.stop_reason
+              : "completed";
+      next.sessionState = withComposedMessages({
+        ...next.sessionState,
+        streamingDraft: {
+          ...next.sessionState.streamingDraft,
+          status: stopped === "interrupted" ? "interrupted" : "completed",
+          stopReason: stopped,
+        },
+      });
+      return next;
+    }
+    case "task.delivered": {
+      const sessionId = typeof data.session_id === "string" ? data.session_id : next.currentSessionId;
+      if (!sessionId || sessionId !== next.currentSessionId) {
+        return next;
+      }
+      const taskMessage: MessageItem = {
         id: createMessageId("task"),
         kind: "task",
         role: "task",
-        content: String(event.content || ""),
-        sessionId: event.session_id || nextState.currentSessionId,
+        content: String(data.content || ""),
+        sessionId,
         status: "task_delivered",
+      };
+      next.sessionState = withComposedMessages({
+        ...next.sessionState,
+        committedMessages: [
+          ...next.sessionState.committedMessages,
+          {
+            ...taskMessage,
+            source: "sse",
+            index: null,
+          },
+        ],
       });
-      return nextState;
-    case "error":
-      nextState.errorText = String(event.message || "未知错误");
-      if (!event.session_id) {
-        nextState.connectionStatus = "error";
-        nextState.connectionDetail = nextState.errorText;
-        if (nextState.connectionReason === "idle") {
-          nextState.connectionReason = "unknown";
-        }
-        nextState.bindCompleted = false;
-        nextState.ownerReady = false;
+      return next;
+    }
+    case "provider.state_changed":
+    case "provider.list_changed":
+      if (data.provider_state) {
+        next.providerState = data.provider_state as ProviderStateSnapshot;
+      } else if (data.provider_list) {
+        next.providerState = data.provider_list as ProviderStateSnapshot;
       }
-      return nextState;
+      next.errorText = null;
+      return next;
+    case "provider.settings_updated":
+      if (data.settings) {
+        next.providerState = updateProviderSettings(
+          next.providerState,
+          data.settings as ProviderStateItem,
+        );
+      }
+      next.errorText = null;
+      return next;
+    case "provider.active_changed":
+      if (data.active && next.providerState) {
+        next.providerState = {
+          ...next.providerState,
+          active: data.active as ProviderStateSnapshot["active"],
+        };
+      }
+      next.errorText = null;
+      return next;
+    case "sidebar.snapshot":
+      if (data.sidebar) {
+        next.sidebar = data.sidebar as DesktopSidebarData;
+        next.sidebarReady = true;
+      }
+      return next;
+    case "sidebar.invalidated":
+      next.sidebarReady = false;
+      return next;
     default:
-      return nextState;
+      return next;
+  }
+}
+
+export function desktopReducer(state: DesktopAppState, action: DesktopAction): DesktopAppState {
+  switch (action.type) {
+    case "profile/update":
+      return {
+        ...state,
+        profile: action.profile,
+        providerCatalog: null,
+        providerState: null,
+        sidebar: createSidebarState(),
+        sidebarReady: false,
+      };
+    case "connection/status": {
+      const connected = action.status === "connected";
+      return {
+        ...state,
+        connectionStatus: action.status,
+        connectionDetail: action.detail,
+        connectionReason: action.reason ?? state.connectionReason,
+        bootstrapLoaded: action.bootstrapLoaded ?? (connected ? state.bootstrapLoaded : false),
+        eventsConnected: action.eventsConnected ?? (connected ? state.eventsConnected : false),
+        providerCatalog: connected ? state.providerCatalog : null,
+        providerState: connected ? state.providerState : null,
+        sidebar: connected ? state.sidebar : createSidebarState(),
+        sidebarReady: connected ? state.sidebarReady : false,
+        errorText: action.status === "error" ? action.detail : null,
+      };
+    }
+    case "bootstrap/loaded":
+      return {
+        ...state,
+        connectionStatus: "connected",
+        connectionDetail: `已连接到 ${action.host}:${action.port}`,
+        connectionReason: "idle",
+        bootstrapLoaded: true,
+        providerCatalog: action.bootstrap.provider_catalog,
+        providerState: action.bootstrap.provider_state,
+        sidebar: action.bootstrap.sidebar,
+        sidebarReady: true,
+        sessionState: withComposedMessages({
+          ...state.sessionState,
+          lastStatus: action.bootstrap.status,
+        }),
+        errorText: null,
+      };
+    case "events/connected":
+      return {
+        ...state,
+        eventsConnected: action.connected,
+        connectionStatus: action.connected ? "connected" : state.connectionStatus,
+      };
+    case "session/current":
+      return {
+        ...state,
+        currentSessionId: action.sessionId,
+        sessionState: createThreadState(action.sessionId),
+      };
+    case "messages/loaded":
+      return {
+        ...state,
+        currentSessionId: action.response.session_id,
+        sessionState: withComposedMessages({
+          ...createThreadState(action.response.session_id),
+          committedMessages: normalizeCommittedMessages(action.response),
+          lastStatus: state.sessionState.lastStatus,
+        }),
+      };
+    case "message/pendingUser": {
+      const pending = {
+        id: createMessageId("user"),
+        kind: "user" as const,
+        role: "user",
+        content: action.content,
+        sessionId: action.sessionId,
+        status: "sent" as const,
+      };
+      return {
+        ...state,
+        currentSessionId: action.sessionId,
+        sessionState: withComposedMessages({
+          ...state.sessionState,
+          sessionId: action.sessionId,
+          pendingUserMessage: pending,
+        }),
+      };
+    }
+    case "sidebar/data":
+      return {
+        ...state,
+        sidebar: action.data,
+        sidebarReady: true,
+      };
+    case "sidebar/reset":
+      return {
+        ...state,
+        sidebar: createSidebarState(),
+        sidebarReady: false,
+      };
+    case "status/loaded":
+      return {
+        ...state,
+        sessionState: withComposedMessages({
+          ...state.sessionState,
+          lastStatus: action.status,
+        }),
+      };
+    case "provider/listLoaded":
+      return {
+        ...state,
+        providerCatalog: action.providerCatalog ?? state.providerCatalog,
+        providerState: action.providerState,
+      };
+    case "provider/stateLoaded":
+      return {
+        ...state,
+        providerState: action.providerState,
+      };
+    case "thread/clear":
+      return {
+        ...state,
+        sessionState: createThreadState(state.currentSessionId),
+      };
+    case "sse/received":
+      return updateSseState(state, action.event);
+    case "resync/handled":
+      return {
+        ...state,
+        needsResync: false,
+      };
+    case "error/set":
+      return {
+        ...state,
+        errorText: action.message,
+      };
+    default:
+      return state;
   }
 }

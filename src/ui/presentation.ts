@@ -21,16 +21,10 @@ export type ThreadDisplayItem = ThreadMessageDisplayItem | ThreadProcessDisplayI
 function getConnectionStatusCopy(
   state: Pick<
     DesktopAppState,
-    "connectionStatus" | "connectionReason" | "connectionDetail" | "ownerReady" | "readyReceived" | "bindCompleted"
+    "connectionStatus" | "connectionReason" | "connectionDetail" | "bootstrapLoaded" | "eventsConnected"
   >,
 ): { label: string; detail: string } {
   if (state.connectionStatus === "connecting") {
-    if (state.readyReceived && !state.bindCompleted) {
-      return {
-        label: "已连接",
-        detail: "已连接 remote，等待你发送首条消息",
-      };
-    }
     return {
       label: "连接中",
       detail: "正在建立连接…",
@@ -40,7 +34,9 @@ function getConnectionStatusCopy(
   if (state.connectionStatus === "connected") {
     return {
       label: "已连接",
-      detail: state.connectionDetail || "已连接到当前 remote",
+      detail: state.eventsConnected
+        ? state.connectionDetail || "已连接到当前 remote"
+        : "HTTP 已连接，正在等待事件流",
     };
   }
 
@@ -54,13 +50,6 @@ function getConnectionStatusCopy(
     return {
       label: "连接失败",
       detail: state.connectionDetail || "无法连接到当前 remote",
-    };
-  }
-
-  if (state.connectionReason === "owner_unavailable") {
-    return {
-      label: "等待主窗口",
-      detail: "等待主窗口连接",
     };
   }
 
@@ -80,7 +69,7 @@ function getConnectionStatusCopy(
 export function getConnectionLabel(
   state: Pick<
     DesktopAppState,
-    "connectionStatus" | "connectionReason" | "connectionDetail" | "ownerReady" | "readyReceived" | "bindCompleted"
+    "connectionStatus" | "connectionReason" | "connectionDetail" | "bootstrapLoaded" | "eventsConnected"
   >,
 ): string {
   return getConnectionStatusCopy(state).label;
@@ -89,7 +78,7 @@ export function getConnectionLabel(
 export function getConnectionDetailLabel(
   state: Pick<
     DesktopAppState,
-    "connectionStatus" | "connectionReason" | "connectionDetail" | "ownerReady" | "readyReceived" | "bindCompleted"
+    "connectionStatus" | "connectionReason" | "connectionDetail" | "bootstrapLoaded" | "eventsConnected"
   >,
 ): string {
   return getConnectionStatusCopy(state).detail;
@@ -98,18 +87,18 @@ export function getConnectionDetailLabel(
 export function getConversationSummary(
   state: Pick<
     DesktopAppState,
-    "connectionStatus" | "connectionReason" | "connectionDetail" | "ownerReady" | "readyReceived" | "bindCompleted" | "sessionState"
+    "connectionStatus" | "connectionReason" | "connectionDetail" | "bootstrapLoaded" | "eventsConnected" | "sessionState"
   >,
 ): string {
-  if (!state.ownerReady) {
+  if (!state.bootstrapLoaded) {
     return getConnectionStatusCopy(state).detail;
   }
 
-  const activeTurn = state.sessionState.activeTurn;
-  if (activeTurn && !activeTurn.completed) {
+  const draft = state.sessionState.streamingDraft;
+  if (draft && draft.status === "streaming") {
     return "正在回复当前会话";
   }
-  if (activeTurn?.stopReason === "interrupted") {
+  if (draft?.stopReason === "interrupted") {
     return "上一轮已被打断";
   }
   if (state.sessionState.messages.length === 0) {
@@ -121,14 +110,17 @@ export function getConversationSummary(
 export function getWorkspaceSummary(
   state: Pick<
     DesktopAppState,
-    "connectionStatus" | "connectionReason" | "connectionDetail" | "ownerReady" | "readyReceived" | "bindCompleted" | "sessionState" | "currentSessionId"
+    "connectionStatus" | "connectionReason" | "connectionDetail" | "bootstrapLoaded" | "eventsConnected" | "sessionState" | "currentSessionId"
   >,
 ): string {
-  if (!state.ownerReady) {
+  if (!state.bootstrapLoaded) {
     return getConnectionStatusCopy(state).detail;
   }
-  if (state.sessionState.activeTurn && !state.sessionState.activeTurn.completed) {
+  if (state.sessionState.streamingDraft?.status === "streaming") {
     return "当前会话正在处理中。";
+  }
+  if (!state.currentSessionId) {
+    return "未选择会话，发送首条消息会自动创建。";
   }
   return `当前会话 · ${shortenSessionId(state.currentSessionId)}`;
 }
@@ -140,16 +132,16 @@ export function getHeaderSessionLabel(sessionId: string): string {
 export function getComposerHint(
   state: Pick<
     DesktopAppState,
-    "connectionStatus" | "connectionReason" | "connectionDetail" | "ownerReady" | "readyReceived" | "bindCompleted" | "sessionState"
+    "connectionStatus" | "connectionReason" | "connectionDetail" | "bootstrapLoaded" | "eventsConnected" | "sessionState"
   >,
 ): string {
-  if (!state.ownerReady) {
-    if (state.readyReceived && !state.bindCompleted && state.connectionStatus !== "error") {
+  if (!state.bootstrapLoaded) {
+    if (state.connectionStatus === "connected") {
       return "当前还没有选中会话，发送首条消息时会自动创建。";
     }
     return getConnectionStatusCopy(state).detail;
   }
-  if (state.sessionState.activeTurn && !state.sessionState.activeTurn.completed) {
+  if (state.sessionState.streamingDraft?.status === "streaming") {
     return "发送新消息会先中断上一轮。";
   }
   return "消息会直接进入当前 desktop session。";

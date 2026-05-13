@@ -1,12 +1,12 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../src/ui/App";
+import type { BootstrapResponse, SessionMessagesResponse, SessionResponse } from "../src/lib/types";
 
 const mockRandomUUID = vi.fn(() => "session-uuid");
 
 const storeMocks = vi.hoisted(() => ({
-  uploadRemoteSkillZip: vi.fn(async () => "upload-token-1"),
   saveRemoteCatalog: vi.fn(),
   saveProfile: vi.fn(),
   registerRemoteSession: vi.fn((catalog, remoteId, sessionId) => ({
@@ -23,14 +23,6 @@ const storeMocks = vi.hoisted(() => ({
       entry.id === remoteId ? { ...entry, sessionIds } : entry,
     ),
   })),
-  unregisterRemoteSession: vi.fn((catalog, remoteId, sessionId) => ({
-    ...catalog,
-    remotes: catalog.remotes.map((entry: { id: string; sessionIds?: string[] }) =>
-      entry.id === remoteId
-        ? { ...entry, sessionIds: (entry.sessionIds || []).filter((id) => id !== sessionId) }
-        : entry,
-    ),
-  })),
 }));
 
 vi.mock("../src/lib/store", () => ({
@@ -45,247 +37,135 @@ vi.mock("../src/lib/store", () => ({
           port: "8765",
           token: "secret-token",
           clientId: "test-client",
-          defaultSessionId: "desktop:test-client",
-          lastBoundSessionId: "desktop:test-client",
+          defaultSessionId: "",
+          lastBoundSessionId: "",
           themePreference: "system",
         },
-      },
-      {
-        id: "local-client",
-        name: "本地",
-        profile: {
-          host: "127.0.0.1",
-          port: "8765",
-          token: "",
-          clientId: "local-client",
-          defaultSessionId: "desktop:local-client",
-          lastBoundSessionId: "desktop:local-client",
-          themePreference: "system",
-        },
+        sessionIds: [],
       },
     ],
   }),
   applyRemoteDefaults: vi.fn(async (profile) => profile),
   saveProfile: storeMocks.saveProfile,
   saveRemoteCatalog: storeMocks.saveRemoteCatalog,
-  uploadRemoteSkillZip: storeMocks.uploadRemoteSkillZip,
+  uploadRemoteSkillZip: vi.fn(async () => "upload-token-1"),
   registerRemoteSession: storeMocks.registerRemoteSession,
   syncRemoteSessions: storeMocks.syncRemoteSessions,
-  unregisterRemoteSession: storeMocks.unregisterRemoteSession,
-  upsertRemoteEntry: vi.fn((catalog: { remotes: Array<{ id: string; name: string; profile: unknown }> }, entry: { id: string; name: string; profile: unknown }) => ({
+  unregisterRemoteSession: vi.fn((catalog) => catalog),
+  upsertRemoteEntry: vi.fn((catalog, entry) => ({
     ...catalog,
-    remotes: catalog.remotes.map((item) => (item.id === entry.id ? { id: item.id, name: entry.name, profile: entry.profile } : item)),
+    remotes: catalog.remotes.map((item: { id: string }) =>
+      item.id === entry.id ? { ...item, ...entry } : item,
+    ),
   })),
   deleteRemoteEntry: vi.fn((catalog) => catalog),
 }));
 
 type MockConnectCallback = {
+  onBootstrap?: (bootstrap: BootstrapResponse) => void;
   onOpen?: () => void;
-  onClose?: (error?: { kind: string; message: string }) => void;
-  onError?: (error: { kind: string; message: string }) => void;
-  onEvent?: (event: { type?: string; [key: string]: unknown }) => void;
+  onEvent?: (event: unknown) => void;
 };
 
-const connectCalls: Array<{ profile: { defaultSessionId: string; host: string; port: string; token: string }; callbacks: MockConnectCallback }> = [];
-let pendingDisconnectResolve: (() => void) | null = null;
-const mockSend = vi.fn(async () => true);
+const bootstrapPayload: BootstrapResponse = {
+  status: { ok: true },
+  sessions: [],
+  provider_catalog: { providers: [] },
+  provider_state: {
+    providers: [],
+    active: { provider: "custom", model: "model-a" },
+    apply_mode: "reload_runtime",
+  },
+  tasks: [],
+  sidebar: { tasks: [], skills: [], mcpServers: [] },
+};
 
-const mockConnect = vi.fn(async (profile, callbacks) => {
-  connectCalls.push({ profile, callbacks });
-  callbacks.onOpen?.();
-  callbacks.onEvent?.({
-    type: "ready",
-    host: profile.host,
-    port: Number(profile.port),
-  });
-  callbacks.onEvent?.({
-    type: "session_bound",
-    session_id: profile.defaultSessionId,
-  });
+const emptyMessages = (sessionId: string): SessionMessagesResponse => ({
+  session_id: sessionId,
+  messages: [],
+  cursor: 0,
+  next_cursor: null,
+  total_messages: 0,
 });
-const mockDisconnect = vi.fn(
-  () =>
-    new Promise<void>((resolve) => {
-      pendingDisconnectResolve = resolve;
-    }),
-);
+
+const connectCalls: MockConnectCallback[] = [];
+const mockCreateSession = vi.fn(async (): Promise<SessionResponse> => ({
+  session: {
+    key: "desktop:test-client:session-uuid",
+    session_id: "desktop:test-client:session-uuid",
+    title: null,
+    created_at_ms: Date.now(),
+    updated_at_ms: Date.now(),
+    message_count: 0,
+    archived: false,
+    source: "desktop",
+  },
+}));
+const mockLoadMessages = vi.fn(async (sessionId: string) => emptyMessages(sessionId));
+const mockCreateTurn = vi.fn(async () => ({
+  turn_id: "turn-1",
+  session_id: "desktop:test-client:session-uuid",
+  status: "queued" as const,
+}));
 
 vi.mock("../src/transport/remoteClient", () => {
   class MockRemoteClient {
-    connect = mockConnect;
-    disconnect = mockDisconnect;
-    send = mockSend;
+    connect = vi.fn(async (_profile, callbacks: MockConnectCallback) => {
+      connectCalls.push(callbacks);
+      callbacks.onBootstrap?.(bootstrapPayload);
+      callbacks.onOpen?.();
+    });
+    disconnect = vi.fn(async () => {});
+    bootstrap = vi.fn(async () => bootstrapPayload);
+    listSessions = vi.fn(async () => ({ sessions: [], page: { next_page_token: null, total_count: 0 } }));
+    createSession = mockCreateSession;
+    loadMessages = mockLoadMessages;
+    createTurn = mockCreateTurn;
+    getSidebar = vi.fn(async () => bootstrapPayload.sidebar);
   }
-  return { RemoteClient: MockRemoteClient };
+  return { RemoteClient: MockRemoteClient, RemoteApiError: class RemoteApiError extends Error {} };
 });
 
-describe("App", () => {
+describe("App HTTP/SSE native session flow", () => {
   beforeEach(() => {
-    vi.useRealTimers();
-    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    vi.clearAllMocks();
+    connectCalls.length = 0;
     vi.stubGlobal("crypto", { randomUUID: mockRandomUUID });
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation(() => ({
         matches: false,
         media: "(prefers-color-scheme: dark)",
-        onchange: null,
         addEventListener: vi.fn(),
         removeEventListener: vi.fn(),
         addListener: vi.fn(),
         removeListener: vi.fn(),
-        dispatchEvent: vi.fn(),
       })),
     });
-    mockConnect.mockClear();
-    mockDisconnect.mockClear();
-    mockSend.mockClear();
-    connectCalls.length = 0;
-    pendingDisconnectResolve = null;
-    document.documentElement.dataset.theme = "";
   });
 
-  it("renders the desktop shell and advanced settings", async () => {
+  it("does not create a session on bootstrap when remote has no desktop sessions", async () => {
     render(<App />);
 
-    await waitFor(() => {
-      expect(screen.getAllByText("Nomi").length).toBeGreaterThan(0);
-    });
+    await waitFor(() => expect(connectCalls).toHaveLength(1));
+    expect(mockCreateSession).not.toHaveBeenCalled();
+    expect(screen.getByText("今天想聊点什么？")).toBeInTheDocument();
   });
 
-  it("keeps advanced settings free of removed desktop extras", async () => {
+  it("creates a session and posts first turn only after user sends content", async () => {
     render(<App />);
 
-    await waitFor(() => {
-      expect(screen.getByText("高级设置")).toBeInTheDocument();
-      expect(screen.queryByText("启用桌宠")).not.toBeInTheDocument();
-      expect(screen.queryByText("缩放")).not.toBeInTheDocument();
-      expect(screen.queryByText(/恢复默认位置/i)).not.toBeInTheDocument();
-    });
-  });
+    const input = await screen.findByLabelText("消息输入");
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
 
-  it("keeps the fixed session wiring stable", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(mockConnect).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it("drops stale remote session events after switching to a local remote", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(mockConnect).toHaveBeenCalledTimes(1);
-    });
-
-    fireEvent.click(screen.getAllByRole("button", { name: /远端/ })[0]);
-    const localRemoteCard = screen.getByText("本地").closest("article");
-    expect(localRemoteCard).not.toBeNull();
-    fireEvent.click(within(localRemoteCard as HTMLElement).getByRole("button", { name: "连接" }));
-
-    connectCalls[0]?.callbacks.onEvent?.({
-      type: "session_list",
-      sessions: [
-        {
-          key: "desktop:stale",
-          session_id: "desktop:stale",
-          title: "stale",
-          created_at_ms: 1710000000000,
-          updated_at_ms: 1710000000000,
-          message_count: 1,
-          archived: false,
-          source: "remote",
-        },
-      ],
-      next_page_token: null,
-      total_count: 1,
-    });
-
-    pendingDisconnectResolve?.();
-
-    fireEvent.click(screen.getByRole("button", { name: "打开设置菜单" }));
-    fireEvent.click(screen.getByRole("button", { name: /会话管理/ }));
-
-    await waitFor(() => {
-      expect(screen.getByText("当前远端还没有历史会话。")).toBeInTheDocument();
-      expect(screen.queryByText("desktop:stale")).not.toBeInTheDocument();
-    });
-  });
-
-  it("does not render browser-local sidebar fallback before remote snapshot arrives", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByText("等待当前 remote 同步 Skills。")).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText("位于")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "卸载" })).not.toBeInTheDocument();
-  });
-
-  it("refreshes sidebar after successful skill uninstall mutation", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(mockConnect).toHaveBeenCalledTimes(1);
-    });
-
-    mockSend.mockClear();
-
-    connectCalls[0]?.callbacks.onEvent?.({
-      type: "resource_action_result",
-      session_id: "desktop:test-client",
-      resource: "skill",
-      action: "uninstall",
-      ok: true,
-      message: "已卸载 skill。",
-      skill_name: "demo-skill",
-    });
-
-    await waitFor(() => {
-      expect(mockSend).toHaveBeenCalledWith({
-        type: "get_sidebar",
-        session_id: "desktop:test-client",
-      });
-    });
-  });
-
-  it("recovers automatically when the saved default session no longer exists on remote", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(mockConnect).toHaveBeenCalledTimes(1);
-    });
-
-    mockSend.mockClear();
-
-    connectCalls[0]?.callbacks.onEvent?.({
-      type: "error",
-      command: "bind_session",
-      code: "session_not_found",
-      session_id: "desktop:test-client",
-      message: "session missing",
-    });
-
-    await waitFor(() => {
-      expect(mockSend).toHaveBeenCalledWith({
-        type: "create_session",
-        session_id: "desktop:test-client:session-uuid",
-      });
-    });
-
-    connectCalls[0]?.callbacks.onEvent?.({
-      type: "session_created",
+    await waitFor(() => expect(mockCreateSession).toHaveBeenCalledWith({
       session_id: "desktop:test-client:session-uuid",
-      created_at_ms: 1710000000000,
-    });
-
-    await waitFor(() => {
-      expect(mockSend).toHaveBeenCalledWith({
-        type: "bind_session",
-        session_id: "desktop:test-client:session-uuid",
-      });
-    });
+    }));
+    await waitFor(() => expect(mockCreateTurn).toHaveBeenCalledWith(
+      "desktop:test-client:session-uuid",
+      expect.objectContaining({ content: "你好", client_id: "test-client" }),
+    ));
+    expect(screen.getByText("你好")).toBeInTheDocument();
   });
 });
