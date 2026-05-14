@@ -1795,40 +1795,52 @@ textarea {
 .chat-header-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  min-width: 0;
 }
 
 .chat-header-title {
-  font-size: 17px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 650;
   line-height: 1.25;
-  color: var(--text-strong);
+  color: #111111;
 }
 
 .chat-header-pill {
   display: inline-flex;
   align-items: center;
+  flex: 0 1 auto;
+  max-width: 210px;
   border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 11px;
-  font-weight: 600;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   background: var(--surface-250);
-  color: var(--text-muted);
+  color: #111111;
 }
 
 .chat-header-pill.connected {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--accent-soft-strong);
+  color: #111111;
+}
+
+.chat-header-pill.model {
+  background: var(--accent-soft-strong);
+  color: #111111;
 }
 
 .chat-header-pill.connecting {
   background: var(--info-soft);
-  color: var(--info);
+  color: #111111;
 }
 
 .chat-header-pill.error {
   background: var(--error-soft);
-  color: var(--error);
+  color: #111111;
 }
 
 .header-icon-button,

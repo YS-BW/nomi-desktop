@@ -218,6 +218,16 @@ describe("MainShell HTTP resource actions", () => {
     vi.clearAllMocks();
   });
 
+  it("shows active model in header and removes pending model settings meta", () => {
+    renderShell();
+    expect(screen.getByText("mimo-chat")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "打开设置菜单" }));
+
+    expect(screen.getByRole("button", { name: "模型设置" })).toBeInTheDocument();
+    expect(screen.queryByText("待接入")).not.toBeInTheDocument();
+  });
+
   it("creates a task through explicit createTask action", async () => {
     const actions = renderShell();
     await openDisclosure("任务");
@@ -279,7 +289,11 @@ describe("MainShell HTTP resource actions", () => {
     expect(apiKeyInput).toHaveValue("sk-existing");
     expect(tokenPlanInput).toHaveValue("tp-existing");
 
+    fireEvent.focus(apiKeyInput);
+    expect(apiKeyInput).toHaveValue("");
     fireEvent.change(apiKeyInput, { target: { value: "sk-new" } });
+    fireEvent.focus(tokenPlanInput);
+    expect(tokenPlanInput).toHaveValue("");
     fireEvent.change(tokenPlanInput, { target: { value: "tp-new" } });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
@@ -294,8 +308,41 @@ describe("MainShell HTTP resource actions", () => {
         }),
       );
     });
+    expect(screen.getByText("Provider 设置已保存，必要时请 reload runtime 生效。")).toBeInTheDocument();
+    const banner = screen.queryByRole("status");
+    if (banner) {
+      expect(banner).not.toHaveTextContent("Provider 设置已保存");
+    }
     expect(actions.setProviderSettings).not.toHaveBeenCalledWith(
       expect.objectContaining({ provider: "mimo", apiBase: expect.anything() }),
+    );
+  });
+
+  it("does not submit saved provider keys until the encrypted input is edited", async () => {
+    const actions = renderShell();
+    openModelSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => {
+      expect(actions.setProviderSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "mimo",
+          model: "mimo-chat",
+        }),
+      );
+    });
+    expect(actions.setProviderSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "mimo",
+        apiKey: expect.anything(),
+      }),
+    );
+    expect(actions.setProviderSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "mimo",
+        tokenPlanApiKey: expect.anything(),
+      }),
     );
   });
 
@@ -317,5 +364,15 @@ describe("MainShell HTTP resource actions", () => {
         }),
       );
     });
+  });
+
+  it("clears provider reload busy state after runtime reload succeeds", async () => {
+    const actions = renderShell();
+    openModelSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Reload Runtime" }));
+
+    await waitFor(() => expect(actions.reloadRuntime).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reload Runtime" })).toBeEnabled());
+    expect(screen.getAllByText("Runtime 已重新加载。").length).toBeGreaterThan(0);
   });
 });

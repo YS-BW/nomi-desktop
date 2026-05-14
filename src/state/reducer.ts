@@ -282,6 +282,33 @@ function mergeProviderItem(
   };
 }
 
+function normalizeProviderState(
+  providerState: ProviderStateSnapshot | null | undefined,
+  previous?: ProviderStateSnapshot | null,
+): ProviderStateSnapshot | null {
+  if (!providerState) {
+    return providerState ?? null;
+  }
+
+  const explicitActive =
+    providerState.active?.provider?.trim() || providerState.active?.model?.trim()
+      ? providerState.active
+      : null;
+  const previousActive =
+    previous?.active?.provider?.trim() || previous?.active?.model?.trim()
+      ? previous.active
+      : null;
+  const inferredProvider = providerState.providers.find((item) => item.saved_model?.trim());
+  const inferredActive = inferredProvider?.saved_model
+    ? { provider: inferredProvider.provider, model: inferredProvider.saved_model }
+    : null;
+
+  return {
+    ...providerState,
+    active: explicitActive || previousActive || inferredActive || { provider: "", model: "" },
+  };
+}
+
 function updateProviderSettings(
   providerState: ProviderStateSnapshot | null,
   settings: ProviderStateItem,
@@ -290,14 +317,14 @@ function updateProviderSettings(
     return providerState;
   }
   const exists = providerState.providers.some((item) => item.provider === settings.provider);
-  return {
+  return normalizeProviderState({
     ...providerState,
     providers: exists
       ? providerState.providers.map((item) =>
           item.provider === settings.provider ? mergeProviderItem(item, settings) : item,
         )
       : [...providerState.providers, settings],
-  };
+  }, providerState);
 }
 
 function updateSseState(state: DesktopAppState, event: SseEventEnvelope): DesktopAppState {
@@ -328,7 +355,7 @@ function updateSseState(state: DesktopAppState, event: SseEventEnvelope): Deskto
       next.connectionReason = "idle";
       next.connectionDetail = "已连接到当前 remote";
       if (data.provider_state) {
-        next.providerState = data.provider_state as ProviderStateSnapshot;
+        next.providerState = normalizeProviderState(data.provider_state as ProviderStateSnapshot, next.providerState);
       }
       next.errorText = null;
       return next;
@@ -340,13 +367,13 @@ function updateSseState(state: DesktopAppState, event: SseEventEnvelope): Deskto
       return next;
     case "runtime.reloaded":
       if (data.provider_state) {
-        next.providerState = data.provider_state as ProviderStateSnapshot;
+        next.providerState = normalizeProviderState(data.provider_state as ProviderStateSnapshot, next.providerState);
       }
       if (data.active && next.providerState) {
-        next.providerState = {
+        next.providerState = normalizeProviderState({
           ...next.providerState,
           active: data.active as ProviderStateSnapshot["active"],
-        };
+        }, next.providerState);
       }
       next.errorText = null;
       return next;
@@ -486,9 +513,9 @@ function updateSseState(state: DesktopAppState, event: SseEventEnvelope): Deskto
     case "provider.state_changed":
     case "provider.list_changed":
       if (data.provider_state) {
-        next.providerState = data.provider_state as ProviderStateSnapshot;
+        next.providerState = normalizeProviderState(data.provider_state as ProviderStateSnapshot, next.providerState);
       } else if (data.provider_list) {
-        next.providerState = data.provider_list as ProviderStateSnapshot;
+        next.providerState = normalizeProviderState(data.provider_list as ProviderStateSnapshot, next.providerState);
       }
       next.errorText = null;
       return next;
@@ -503,10 +530,10 @@ function updateSseState(state: DesktopAppState, event: SseEventEnvelope): Deskto
       return next;
     case "provider.active_changed":
       if (data.active && next.providerState) {
-        next.providerState = {
+        next.providerState = normalizeProviderState({
           ...next.providerState,
           active: data.active as ProviderStateSnapshot["active"],
-        };
+        }, next.providerState);
       }
       next.errorText = null;
       return next;
@@ -559,7 +586,7 @@ export function desktopReducer(state: DesktopAppState, action: DesktopAction): D
         connectionReason: "idle",
         bootstrapLoaded: true,
         providerCatalog: action.bootstrap.provider_catalog,
-        providerState: action.bootstrap.provider_state,
+        providerState: normalizeProviderState(action.bootstrap.provider_state, state.providerState),
         sidebar: action.bootstrap.sidebar,
         sidebarReady: true,
         sessionState: withComposedMessages({
@@ -633,12 +660,12 @@ export function desktopReducer(state: DesktopAppState, action: DesktopAction): D
       return {
         ...state,
         providerCatalog: action.providerCatalog ?? state.providerCatalog,
-        providerState: action.providerState,
+        providerState: normalizeProviderState(action.providerState, state.providerState),
       };
     case "provider/stateLoaded":
       return {
         ...state,
-        providerState: action.providerState,
+        providerState: normalizeProviderState(action.providerState, state.providerState),
       };
     case "thread/clear":
       return {

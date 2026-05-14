@@ -199,4 +199,49 @@ describe("desktop reducer HTTP/SSE native state", () => {
     expect(state.sidebar.skills[0]?.name).toBe("demo-skill");
     expect(state.providerState?.providers[0]?.saved_model).toBe("model-b");
   });
+
+  it("keeps previous active provider when provider list updates without active", () => {
+    let state = makeConnected();
+    state = desktopReducer(state, {
+      type: "sse/received",
+      event: envelope("provider.list_changed", {
+        provider_list: {
+          providers: [
+            {
+              provider: "mimo",
+              display_name: "Mimo",
+              api_key_set: true,
+              saved_model: "mimo-v2.5",
+            },
+          ],
+          active: { provider: "", model: "" },
+          apply_mode: "reload_runtime",
+        },
+      }),
+    });
+
+    expect(state.providerState?.active).toEqual({ provider: "custom", model: "model-a" });
+    expect(state.providerState?.providers[0]?.saved_model).toBe("mimo-v2.5");
+  });
+
+  it("infers active model from saved provider model when no active exists", () => {
+    let state = createInitialDesktopState(createProfile());
+    state = desktopReducer(state, {
+      type: "provider/listLoaded",
+      providerState: {
+        providers: [
+          {
+            provider: "mimo",
+            display_name: "Mimo",
+            api_key_set: true,
+            saved_model: "mimo-v2.5",
+          },
+        ],
+        active: { provider: "", model: "" },
+        apply_mode: "reload_runtime",
+      },
+    });
+
+    expect(state.providerState?.active).toEqual({ provider: "mimo", model: "mimo-v2.5" });
+  });
 });
