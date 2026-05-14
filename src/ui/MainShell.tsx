@@ -23,6 +23,7 @@ import type { DesktopRemoteEntry } from "../lib/store";
 import type { RemoteSessionListState } from "../lib/remoteSessions";
 import { ACCENT_PRESETS, DEFAULT_ACCENT_COLOR } from "../lib/themeAccent";
 import type { DesktopAppState } from "../state/reducer";
+import type { RemoteRuntimeById, RemoteRuntimeState } from "./App";
 import {
   buildThreadDisplayItems,
   getComposerHint,
@@ -60,10 +61,11 @@ interface MainShellProps {
   setPreviewThemePreference(value: ThemePreference | null): void;
   remoteEntries: DesktopRemoteEntry[];
   activeRemoteId: string;
+  remoteRuntimeById: RemoteRuntimeById;
   sessionListState: RemoteSessionListState;
   connectRemote(remoteId: string): void;
   reconnectRemote(remoteId: string): void;
-  disconnectRemote(): void;
+  disconnectRemote(remoteId?: string): void;
   selectSession(sessionId: string): void;
   saveRemote(input: {
     id?: string;
@@ -721,6 +723,25 @@ function buildRemoteFormState(entry?: DesktopRemoteEntry): RemoteFormState {
   };
 }
 
+function getRemoteBadge(
+  runtime: RemoteRuntimeState | undefined,
+  isActive: boolean,
+): { label: string; tone: "success" | "muted" | "warning" | "danger" } {
+  if (isActive) {
+    return { label: "当前", tone: "success" };
+  }
+  if (runtime?.connectionStatus === "connected") {
+    return { label: "已连接", tone: "success" };
+  }
+  if (runtime?.connectionStatus === "connecting") {
+    return { label: "连接中", tone: "warning" };
+  }
+  if (runtime?.connectionStatus === "error") {
+    return { label: "连接失败", tone: "danger" };
+  }
+  return { label: "未连接", tone: "muted" };
+}
+
 function shortenSessionId(sessionId: string): string {
   if (sessionId.length <= 52) {
     return sessionId;
@@ -739,6 +760,7 @@ export function MainShell(props: MainShellProps) {
     setPreviewThemePreference,
     remoteEntries,
     activeRemoteId,
+    remoteRuntimeById,
     sessionListState,
     connectRemote,
     reconnectRemote,
@@ -1703,18 +1725,6 @@ export function MainShell(props: MainShellProps) {
       ) : null}
       <aside className="desktop-sidebar">
         <section className="sidebar-section">
-          <div className="sidebar-section-label">当前远端</div>
-          <div className="sidebar-status-card">
-            <div className="sidebar-status-row">
-              <span className="status-dot" />
-              <span>{connectionLabel}</span>
-            </div>
-            <div className="sidebar-status-detail">{workspaceSummary}</div>
-            <div className="sidebar-status-copy">{connectionDetailLabel}</div>
-          </div>
-        </section>
-
-        <section className="sidebar-section">
           <SidebarDisclosure
             title="远端"
             count={remoteEntries.length}
@@ -1733,40 +1743,46 @@ export function MainShell(props: MainShellProps) {
             <div className="sidebar-entity-list">
               {remoteEntries.map((entry) => {
                 const isActive = entry.id === activeRemoteId;
-                const showConnectedActions = isActive && state.connectionStatus === "connected";
-                const showConnectingActions = isActive && state.connectionStatus === "connecting";
+                const runtime = remoteRuntimeById[entry.id];
+                const badge = getRemoteBadge(runtime, isActive);
+                const isConnected = runtime?.connectionStatus === "connected";
+                const isConnecting = runtime?.connectionStatus === "connecting";
+                const unreadCount = runtime?.unreadCount || 0;
                 return (
                   <article key={entry.id} className="sidebar-entity-card compact">
                     <div className="sidebar-entity-title-row">
                       <div className="sidebar-entity-title">{entry.name}</div>
-                      <span className={`sidebar-badge ${isActive ? "success" : "muted"}`}>
-                        {isActive ? "当前" : "待命"}
-                      </span>
+                      <div className="sidebar-remote-badge-group">
+                        <span className={`sidebar-badge ${badge.tone}`}>{badge.label}</span>
+                        {!isActive && unreadCount > 0 ? (
+                          <span className="sidebar-badge unread">{unreadCount > 99 ? "99+" : unreadCount}</span>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="sidebar-entity-primary">
                       {entry.profile.host}:{entry.profile.port}
                     </div>
                       <div className="sidebar-entity-meta">
-                        {entry.profile.token ? "已配置 token" : "未配置 token"}
+                        {runtime?.connectionStatus === "error"
+                          ? runtime.connectionDetail
+                          : entry.profile.token ? "已配置 token" : "未配置 token"}
                       </div>
                     <div className="sidebar-card-actions">
-                      {isActive ? (
+                      {isConnected ? (
                         <>
                           <button
                             type="button"
                             className="sidebar-inline-button"
-                            onClick={
-                              showConnectedActions ? disconnectRemote : () => connectRemote(entry.id)
-                            }
-                            disabled={showConnectingActions}
+                            onClick={() => disconnectRemote(entry.id)}
+                            disabled={isConnecting}
                           >
-                            {showConnectingActions ? "连接中..." : showConnectedActions ? "断开" : "连接"}
+                            断开
                           </button>
                           <button
                             type="button"
                             className="sidebar-inline-button secondary"
                             onClick={() => reconnectRemote(entry.id)}
-                            disabled={showConnectingActions}
+                            disabled={isConnecting}
                           >
                             重连
                           </button>
@@ -1776,8 +1792,9 @@ export function MainShell(props: MainShellProps) {
                           type="button"
                           className="sidebar-inline-button"
                           onClick={() => connectRemote(entry.id)}
+                          disabled={isConnecting}
                         >
-                          连接
+                          {isConnecting ? "连接中..." : "连接"}
                         </button>
                       )}
                       <SidebarMoreMenu

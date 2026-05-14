@@ -7,6 +7,22 @@ import type { BootstrapResponse, SessionMessagesResponse, SessionResponse } from
 const mockRandomUUID = vi.fn(() => "session-uuid");
 
 const storeMocks = vi.hoisted(() => ({
+  remotes: [
+    {
+      id: "test-client",
+      name: "默认远端",
+      profile: {
+        host: "127.0.0.1",
+        port: "8765",
+        token: "secret-token",
+        clientId: "test-client",
+        defaultSessionId: "",
+        lastBoundSessionId: "",
+        themePreference: "system",
+      },
+      sessionIds: [],
+    },
+  ],
   saveRemoteCatalog: vi.fn(),
   saveProfile: vi.fn(),
   registerRemoteSession: vi.fn((catalog, remoteId, sessionId) => ({
@@ -28,22 +44,7 @@ const storeMocks = vi.hoisted(() => ({
 vi.mock("../src/lib/store", () => ({
   loadRemoteCatalog: () => ({
     activeRemoteId: "test-client",
-    remotes: [
-      {
-        id: "test-client",
-        name: "默认远端",
-        profile: {
-          host: "127.0.0.1",
-          port: "8765",
-          token: "secret-token",
-          clientId: "test-client",
-          defaultSessionId: "",
-          lastBoundSessionId: "",
-          themePreference: "system",
-        },
-        sessionIds: [],
-      },
-    ],
+    remotes: storeMocks.remotes,
   }),
   applyRemoteDefaults: vi.fn(async (profile) => profile),
   saveProfile: storeMocks.saveProfile,
@@ -130,6 +131,22 @@ describe("App HTTP/SSE native session flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     connectCalls.length = 0;
+    storeMocks.remotes = [
+      {
+        id: "test-client",
+        name: "默认远端",
+        profile: {
+          host: "127.0.0.1",
+          port: "8765",
+          token: "secret-token",
+          clientId: "test-client",
+          defaultSessionId: "",
+          lastBoundSessionId: "",
+          themePreference: "system",
+        },
+        sessionIds: [],
+      },
+    ];
     vi.stubGlobal("crypto", { randomUUID: mockRandomUUID });
     Object.defineProperty(window, "matchMedia", {
       writable: true,
@@ -150,6 +167,30 @@ describe("App HTTP/SSE native session flow", () => {
     await waitFor(() => expect(connectCalls).toHaveLength(1));
     expect(mockCreateSession).not.toHaveBeenCalled();
     expect(screen.getByText("今天想聊点什么？")).toBeInTheDocument();
+  });
+
+  it("connects every configured remote on startup", async () => {
+    storeMocks.remotes = [
+      ...storeMocks.remotes,
+      {
+        id: "second-client",
+        name: "第二远端",
+        profile: {
+          host: "127.0.0.1",
+          port: "8766",
+          token: "second-token",
+          clientId: "second-client",
+          defaultSessionId: "",
+          lastBoundSessionId: "",
+          themePreference: "system",
+        },
+        sessionIds: [],
+      },
+    ];
+
+    render(<App />);
+
+    await waitFor(() => expect(connectCalls).toHaveLength(2));
   });
 
   it("creates a session and posts first turn only after user sends content", async () => {

@@ -7,6 +7,7 @@ import type {
   SidebarMcpItem,
   SidebarTaskItem,
 } from "nomi-protocol";
+import type { ComponentProps } from "react";
 import type { ConnectionProfile, DesktopActions, TaskSchedule } from "../src/lib/types";
 import { createEmptyRemoteSessionListState } from "../src/lib/remoteSessions";
 import { createInitialDesktopState } from "../src/state/reducer";
@@ -176,8 +177,9 @@ function buildActions(overrides: Partial<ShellActions> = {}): ShellActions {
   };
 }
 
-function renderShell(overrides: { actions?: Partial<ShellActions> } = {}) {
+function renderShell(overrides: { actions?: Partial<ShellActions>; shellProps?: Partial<ComponentProps<typeof MainShell>> } = {}) {
   const actions = buildActions(overrides.actions);
+  const profile = buildProfile();
   render(
     <MainShell
       state={buildState()}
@@ -187,15 +189,27 @@ function renderShell(overrides: { actions?: Partial<ShellActions> } = {}) {
       sidebarCollapsed={false}
       previewThemePreference={null}
       setPreviewThemePreference={vi.fn()}
-      remoteEntries={[{ id: "remote-main", name: "主远端", profile: buildProfile(), sessionIds: [] }]}
+      remoteEntries={overrides.shellProps?.remoteEntries || [{ id: "remote-main", name: "主远端", profile, sessionIds: [] }]}
       activeRemoteId="remote-main"
+      remoteRuntimeById={overrides.shellProps?.remoteRuntimeById || {
+        "remote-main": {
+          connectionStatus: "connected",
+          connectionDetail: "已连接",
+          connectionReason: "idle",
+          bootstrapLoaded: true,
+          eventsConnected: true,
+          errorText: null,
+          unreadCount: 0,
+          lastActivityAt: null,
+        },
+      }}
       sessionListState={createEmptyRemoteSessionListState()}
-      connectRemote={vi.fn()}
-      reconnectRemote={vi.fn()}
-      disconnectRemote={vi.fn()}
-      selectSession={vi.fn()}
-      saveRemote={vi.fn()}
-      deleteRemote={vi.fn()}
+      connectRemote={overrides.shellProps?.connectRemote || vi.fn()}
+      reconnectRemote={overrides.shellProps?.reconnectRemote || vi.fn()}
+      disconnectRemote={overrides.shellProps?.disconnectRemote || vi.fn()}
+      selectSession={overrides.shellProps?.selectSession || vi.fn()}
+      saveRemote={overrides.shellProps?.saveRemote || vi.fn()}
+      deleteRemote={overrides.shellProps?.deleteRemote || vi.fn()}
       toggleSidebar={vi.fn()}
       updateProfile={vi.fn()}
       clearGlobalError={vi.fn()}
@@ -226,6 +240,56 @@ describe("MainShell HTTP resource actions", () => {
 
     expect(screen.getByRole("button", { name: "模型设置" })).toBeInTheDocument();
     expect(screen.queryByText("待接入")).not.toBeInTheDocument();
+  });
+
+  it("shows remote connection state per remote without the top status card", async () => {
+    const profile = buildProfile();
+    const disconnectRemote = vi.fn();
+    renderShell({
+      shellProps: {
+        remoteEntries: [
+          { id: "remote-main", name: "主远端", profile, sessionIds: [] },
+          {
+            id: "remote-bg",
+            name: "后台远端",
+            profile: { ...profile, clientId: "remote-bg", host: "10.0.0.2" },
+            sessionIds: [],
+          },
+        ],
+        remoteRuntimeById: {
+          "remote-main": {
+            connectionStatus: "connected",
+            connectionDetail: "已连接",
+            connectionReason: "idle",
+            bootstrapLoaded: true,
+            eventsConnected: true,
+            errorText: null,
+            unreadCount: 0,
+            lastActivityAt: null,
+          },
+          "remote-bg": {
+            connectionStatus: "connected",
+            connectionDetail: "已连接",
+            connectionReason: "idle",
+            bootstrapLoaded: true,
+            eventsConnected: true,
+            errorText: null,
+            unreadCount: 3,
+            lastActivityAt: 1,
+          },
+        },
+        disconnectRemote,
+      },
+    });
+
+    expect(screen.queryByText("当前远端")).not.toBeInTheDocument();
+    await openDisclosure("远端");
+    const remoteSection = screen.getByText("后台远端").closest("article");
+    expect(remoteSection).not.toBeNull();
+    expect(within(remoteSection as HTMLElement).getByText("已连接")).toBeInTheDocument();
+    expect(within(remoteSection as HTMLElement).getByText("3")).toBeInTheDocument();
+    fireEvent.click(within(remoteSection as HTMLElement).getByRole("button", { name: "断开" }));
+    expect(disconnectRemote).toHaveBeenCalledWith("remote-bg");
   });
 
   it("creates a task through explicit createTask action", async () => {

@@ -1601,6 +1601,30 @@ textarea {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.sidebar-badge.warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.sidebar-badge.danger {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.sidebar-badge.unread {
+  min-width: 22px;
+  justify-content: center;
+  background: var(--accent-soft-strong);
+  color: var(--text-primary);
+}
+
+.sidebar-remote-badge-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
 .sidebar-status-card {
   border-radius: var(--radius-lg);
   border: 1px solid var(--sidebar-card-border);

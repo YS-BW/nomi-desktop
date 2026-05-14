@@ -20,6 +20,8 @@ import {
   type RemoteSessionItem,
 } from "../lib/remoteSessions";
 import type {
+  BootstrapResponse,
+  ConnectionReason,
   DesktopActions,
   DesktopConnectionProfile,
   RemoteClientError,
@@ -35,12 +37,36 @@ import {
   normalizeAccentColor,
   rgbaFromHex,
 } from "../lib/themeAccent";
-import { createInitialDesktopState, desktopReducer } from "../state/reducer";
+import { createInitialDesktopState, desktopReducer, type DesktopAppState } from "../state/reducer";
 import { RemoteApiError, RemoteClient } from "../transport/remoteClient";
 import { MainShell } from "./MainShell";
 
 const HISTORY_LIMIT = 100;
 const SESSION_PAGE_SIZE = 100;
+
+export interface RemoteRuntimeState {
+  connectionStatus: "disconnected" | "connecting" | "connected" | "error";
+  connectionDetail: string;
+  connectionReason: ConnectionReason;
+  bootstrapLoaded: boolean;
+  eventsConnected: boolean;
+  errorText: string | null;
+  unreadCount: number;
+  lastActivityAt: number | null;
+}
+
+export type RemoteRuntimeById = Record<string, RemoteRuntimeState>;
+
+const DISCONNECTED_REMOTE_RUNTIME: RemoteRuntimeState = {
+  connectionStatus: "disconnected",
+  connectionDetail: "连接已断开",
+  connectionReason: "closed",
+  bootstrapLoaded: false,
+  eventsConnected: false,
+  errorText: null,
+  unreadCount: 0,
+  lastActivityAt: null,
+};
 
 type ResolvedTheme = "light" | "dark";
 
@@ -168,6 +194,24 @@ function normalizeSessions(items: Array<Record<string, unknown>>): RemoteSession
   return items.map((item) => normalizeRemoteSessionItem(item));
 }
 
+function createRemoteRuntime(patch?: Partial<RemoteRuntimeState>): RemoteRuntimeState {
+  return {
+    ...DISCONNECTED_REMOTE_RUNTIME,
+    ...patch,
+  };
+}
+
+function remoteRuntimeFromAppState(state: DesktopAppState): RemoteRuntimeState {
+  return createRemoteRuntime({
+    connectionStatus: state.connectionStatus,
+    connectionDetail: state.connectionDetail,
+    connectionReason: state.connectionReason,
+    bootstrapLoaded: state.bootstrapLoaded,
+    eventsConnected: state.eventsConnected,
+    errorText: state.errorText,
+  });
+}
+
 export function App() {
   const initialRemoteCatalog = useMemo(() => loadRemoteCatalog(), []);
   const initialProfile =
@@ -184,10 +228,17 @@ export function App() {
   const [composerPhase, setComposerPhase] = useState<"idle" | "interrupting" | "sending">("idle");
   const [previewThemePreference, setPreviewThemePreference] = useState<ThemePreference | null>(null);
   const [sessionListState, setSessionListState] = useState(createEmptyRemoteSessionListState);
-  const clientRef = useRef(new RemoteClient());
+  const [remoteRuntimeById, setRemoteRuntimeById] = useState<RemoteRuntimeById>(() => ({
+    [initialRemoteCatalog.activeRemoteId]: remoteRuntimeFromAppState(
+      createInitialDesktopState(initialProfile),
+    ),
+  }));
+  const clientByRemoteIdRef = useRef(new Map<string, RemoteClient>());
   const autoConnectDoneRef = useRef(false);
   const remoteCatalogRef = useRef(initialRemoteCatalog);
   const activeRemoteIdRef = useRef(initialRemoteCatalog.activeRemoteId);
+  const remoteRuntimeByIdRef = useRef(remoteRuntimeById);
+  const stateRef = useRef(state);
   const sessionListStateRef = useRef(sessionListState);
   const sessionListRequestModeRef = useRef<"replace" | "append">("replace");
   const resyncInFlightRef = useRef(false);
@@ -199,6 +250,21 @@ export function App() {
   }, [remoteCatalog]);
 
   useEffect(() => {
+    stateRef.current = state;
+    setRemoteRuntimeById((current) => ({
+      ...current,
+      [activeRemoteIdRef.current]: {
+        ...(current[activeRemoteIdRef.current] || createRemoteRuntime()),
+        ...remoteRuntimeFromAppState(state),
+      },
+    }));
+  }, [state]);
+
+  useEffect(() => {
+    remoteRuntimeByIdRef.current = remoteRuntimeById;
+  }, [remoteRuntimeById]);
+
+  useEffect(() => {
     sessionListStateRef.current = sessionListState;
   }, [sessionListState]);
 
@@ -207,7 +273,10 @@ export function App() {
   }, [resolvedTheme, state.profile.accentColor]);
 
   useEffect(() => () => {
-    void clientRef.current.disconnect();
+    for (const client of clientByRemoteIdRef.current.values()) {
+      void client.disconnect();
+    }
+    clientByRemoteIdRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -216,18 +285,21 @@ export function App() {
         return;
       }
       saveProfile(nextProfile);
-      setRemoteCatalog(loadRemoteCatalog());
+      const nextCatalog = loadRemoteCatalog();
+      setRemoteCatalog(nextCatalog);
+      remoteCatalogRef.current = nextCatalog;
       dispatch({ type: "profile/update", profile: nextProfile });
+      window.setTimeout(() => connectAllRemotes(), 0);
     });
   }, []);
 
   useEffect(() => {
-    if (autoConnectDoneRef.current || !hasConnectableProfile(state.profile)) {
+    if (autoConnectDoneRef.current) {
       return;
     }
     autoConnectDoneRef.current = true;
-    connect(state.profile, activeRemoteIdRef.current);
-  }, [state.profile]);
+    connectAllRemotes();
+  }, []);
 
   useEffect(() => {
     setSessionListState(createEmptyRemoteSessionListState());
@@ -258,6 +330,13 @@ export function App() {
     remoteCatalogRef.current = nextCatalog;
     setRemoteCatalog(nextCatalog);
     saveRemoteCatalog(nextCatalog);
+    setRemoteRuntimeById((current) => {
+      const next: RemoteRuntimeById = {};
+      for (const entry of nextCatalog.remotes) {
+        next[entry.id] = current[entry.id] || createRemoteRuntime();
+      }
+      return next;
+    });
   }
 
   function updateRemoteCatalog(transform: (current: DesktopRemoteCatalog) => DesktopRemoteCatalog) {
@@ -364,8 +443,55 @@ export function App() {
     }));
   }
 
+  function getRemoteClient(remoteId: string): RemoteClient {
+    const existing = clientByRemoteIdRef.current.get(remoteId);
+    if (existing) {
+      return existing;
+    }
+    const client = new RemoteClient();
+    clientByRemoteIdRef.current.set(remoteId, client);
+    return client;
+  }
+
+  function getActiveClient(): RemoteClient {
+    return getRemoteClient(activeRemoteIdRef.current);
+  }
+
+  function updateRemoteRuntime(remoteId: string, patch: Partial<RemoteRuntimeState>) {
+    setRemoteRuntimeById((current) => {
+      const next = {
+        ...current,
+        [remoteId]: {
+          ...(current[remoteId] || createRemoteRuntime()),
+          ...patch,
+        },
+      };
+      remoteRuntimeByIdRef.current = next;
+      return next;
+    });
+  }
+
+  function markRemoteActivity(remoteId: string, event: SseEventEnvelope) {
+    setRemoteRuntimeById((current) => {
+      const previous = current[remoteId] || createRemoteRuntime();
+      const shouldIncrementUnread =
+        remoteId !== activeRemoteIdRef.current &&
+        (event.type === "session.message_appended" || event.type === "session.updated");
+      const next = {
+        ...current,
+        [remoteId]: {
+          ...previous,
+          lastActivityAt: Date.now(),
+          unreadCount: shouldIncrementUnread ? previous.unreadCount + 1 : previous.unreadCount,
+        },
+      };
+      remoteRuntimeByIdRef.current = next;
+      return next;
+    });
+  }
+
   async function loadSessionMessages(sessionId: string) {
-    const response = await clientRef.current.loadMessages(sessionId, { limit: HISTORY_LIMIT });
+    const response = await getActiveClient().loadMessages(sessionId, { limit: HISTORY_LIMIT });
     dispatch({ type: "messages/loaded", response });
     rememberSession(sessionId);
     return response;
@@ -417,7 +543,7 @@ export function App() {
       error: null,
     }));
     try {
-      const response = await clientRef.current.listSessions({
+      const response = await getActiveClient().listSessions({
         pageToken: options?.pageToken ?? null,
         pageSize: SESSION_PAGE_SIZE,
         includeArchived: false,
@@ -458,7 +584,7 @@ export function App() {
       return;
     }
     try {
-      dispatch({ type: "sidebar/data", data: await clientRef.current.getSidebar() });
+      dispatch({ type: "sidebar/data", data: await getActiveClient().getSidebar() });
     } catch (error) {
       dispatch({ type: "error/set", message: formatRemoteError(error, "Sidebar 刷新失败。") });
     }
@@ -466,7 +592,7 @@ export function App() {
 
   async function refreshProviderState() {
     try {
-      const response = await clientRef.current.listProviders();
+      const response = await getActiveClient().listProviders();
       dispatch({ type: "provider/listLoaded", providerState: response.provider_list });
       return true;
     } catch (error) {
@@ -485,7 +611,7 @@ export function App() {
     clearTokenPlanApiKey?: boolean | null;
   }) {
     try {
-      const response = await clientRef.current.updateProvider(input.provider, {
+      const response = await getActiveClient().updateProvider(input.provider, {
         ...(input.apiKey !== undefined ? { api_key: input.apiKey } : {}),
         ...(input.apiBase !== undefined ? { api_base: input.apiBase } : {}),
         ...(input.model !== undefined ? { model: input.model } : {}),
@@ -517,7 +643,7 @@ export function App() {
 
   async function setActiveProvider(input: { provider: string; model?: string | null }) {
     try {
-      const response = await clientRef.current.setActiveProvider({
+      const response = await getActiveClient().setActiveProvider({
         provider: input.provider,
         model: input.model,
       });
@@ -539,7 +665,7 @@ export function App() {
 
   async function reloadRuntime() {
     try {
-      const response = await clientRef.current.reloadRuntime();
+      const response = await getActiveClient().reloadRuntime();
       dispatch({ type: "provider/stateLoaded", providerState: response.provider_state });
       return true;
     } catch (error) {
@@ -550,7 +676,7 @@ export function App() {
 
   async function resyncRemoteState() {
     try {
-      const bootstrap = await clientRef.current.bootstrap();
+      const bootstrap = await getActiveClient().bootstrap();
       dispatch({
         type: "bootstrap/loaded",
         bootstrap,
@@ -570,7 +696,34 @@ export function App() {
     }
   }
 
-  function handleSseEvent(event: SseEventEnvelope) {
+  async function loadActiveRemoteSnapshot(remoteId: string, profile: DesktopConnectionProfile) {
+    try {
+      const bootstrap = await getRemoteClient(remoteId).bootstrap();
+      if (remoteId !== activeRemoteIdRef.current) {
+        return;
+      }
+      dispatch({
+        type: "bootstrap/loaded",
+        bootstrap,
+        host: profile.host,
+        port: profile.port,
+      });
+      const items = normalizeSessions(bootstrap.sessions as unknown as Array<Record<string, unknown>>);
+      updateSessionListFromItems(items);
+      await initializeSessionFromItems(items, remoteId);
+    } catch (error) {
+      if (remoteId !== activeRemoteIdRef.current) {
+        return;
+      }
+      dispatch({ type: "error/set", message: formatRemoteError(error, "远端状态加载失败。") });
+    }
+  }
+
+  function handleSseEvent(remoteId: string, event: SseEventEnvelope) {
+    markRemoteActivity(remoteId, event);
+    if (remoteId !== activeRemoteIdRef.current) {
+      return;
+    }
     dispatch({ type: "sse/received", event });
     const data = (event.data || {}) as Record<string, unknown>;
     if (event.type === "session.created" || event.type === "session.updated") {
@@ -634,16 +787,33 @@ export function App() {
   function connect(profileOverride: DesktopConnectionProfile = state.profile, remoteIdOverride = activeRemoteIdRef.current) {
     autoConnectDoneRef.current = true;
     setComposerPhase("idle");
-    dispatch({
-      type: "connection/status",
-      status: "connecting",
-      detail: "正在建立连接...",
-      reason: "idle",
+    updateRemoteRuntime(remoteIdOverride, {
+      connectionStatus: "connecting",
+      connectionDetail: "正在建立连接...",
+      connectionReason: "idle",
       bootstrapLoaded: false,
       eventsConnected: false,
+      errorText: null,
     });
-    void clientRef.current.connect(profileOverride, {
+    if (remoteIdOverride === activeRemoteIdRef.current) {
+      dispatch({
+        type: "connection/status",
+        status: "connecting",
+        detail: "正在建立连接...",
+        reason: "idle",
+        bootstrapLoaded: false,
+        eventsConnected: false,
+      });
+    }
+    void getRemoteClient(remoteIdOverride).connect(profileOverride, {
       onBootstrap: (bootstrap) => {
+        updateRemoteRuntime(remoteIdOverride, {
+          connectionStatus: "connected",
+          connectionDetail: `已连接到 ${profileOverride.host}:${profileOverride.port}`,
+          connectionReason: "idle",
+          bootstrapLoaded: true,
+          errorText: null,
+        });
         if (remoteIdOverride !== activeRemoteIdRef.current) {
           return;
         }
@@ -658,11 +828,25 @@ export function App() {
         void initializeSessionFromItems(items, remoteIdOverride);
       },
       onOpen: () => {
+        updateRemoteRuntime(remoteIdOverride, {
+          connectionStatus: "connected",
+          connectionReason: "idle",
+          eventsConnected: true,
+          errorText: null,
+        });
         if (remoteIdOverride === activeRemoteIdRef.current) {
           dispatch({ type: "events/connected", connected: true });
         }
       },
       onClose: (error) => {
+        updateRemoteRuntime(remoteIdOverride, {
+          connectionStatus: "disconnected",
+          connectionDetail: error?.message || "连接已断开",
+          connectionReason: error?.kind || "closed",
+          bootstrapLoaded: false,
+          eventsConnected: false,
+          errorText: error?.message || null,
+        });
         if (remoteIdOverride !== activeRemoteIdRef.current) {
           return;
         }
@@ -677,6 +861,14 @@ export function App() {
         });
       },
       onError: (error: RemoteClientError) => {
+        updateRemoteRuntime(remoteIdOverride, {
+          connectionStatus: "error",
+          connectionDetail: error.message,
+          connectionReason: error.kind,
+          bootstrapLoaded: false,
+          eventsConnected: false,
+          errorText: error.message,
+        });
         if (remoteIdOverride !== activeRemoteIdRef.current) {
           return;
         }
@@ -695,16 +887,30 @@ export function App() {
         });
       },
       onEvent: (event) => {
-        if (remoteIdOverride === activeRemoteIdRef.current) {
-          handleSseEvent(event);
-        }
+        handleSseEvent(remoteIdOverride, event);
       },
     });
   }
 
+  function connectAllRemotes() {
+    for (const entry of remoteCatalogRef.current.remotes) {
+      if (!hasConnectableProfile(entry.profile)) {
+        updateRemoteRuntime(entry.id, createRemoteRuntime());
+        continue;
+      }
+      const runtime = remoteRuntimeByIdRef.current[entry.id];
+      if (runtime?.connectionStatus === "connected" || runtime?.connectionStatus === "connecting") {
+        continue;
+      }
+      connect(entry.profile, entry.id);
+    }
+  }
+
   function disconnect() {
     clearPendingSessionWork();
-    void clientRef.current.disconnect();
+    const remoteId = activeRemoteIdRef.current;
+    void getRemoteClient(remoteId).disconnect();
+    updateRemoteRuntime(remoteId, createRemoteRuntime());
     dispatch({
       type: "connection/status",
       status: "disconnected",
@@ -721,7 +927,7 @@ export function App() {
       return;
     }
     try {
-      await clientRef.current.clearRemoteState();
+      await getActiveClient().clearRemoteState();
       dispatch({ type: "thread/clear" });
       await refreshSidebarData();
     } catch (error) {
@@ -743,7 +949,7 @@ export function App() {
       error: null,
     }));
     try {
-      const response = await clientRef.current.createSession({
+      const response = await getActiveClient().createSession({
         session_id: nextSessionId,
         title: title?.trim() || undefined,
       });
@@ -777,7 +983,7 @@ export function App() {
     }
     setComposerPhase("interrupting");
     try {
-      await clientRef.current.interruptTurn(state.currentSessionId);
+      await getActiveClient().interruptTurn(state.currentSessionId);
       return true;
     } catch (error) {
       dispatch({ type: "error/set", message: formatRemoteError(error, "当前轮中断失败。") });
@@ -808,7 +1014,7 @@ export function App() {
           bindingSessionId: nextSessionId,
           error: null,
         }));
-        const response = await clientRef.current.createSession({ session_id: nextSessionId });
+        const response = await getActiveClient().createSession({ session_id: nextSessionId });
         const item = normalizeRemoteSessionItem(response.session as unknown as Record<string, unknown>);
         sessionId = item.sessionId;
         const items = mergeRemoteSessionItems(sessionListStateRef.current.items, [item]);
@@ -825,7 +1031,7 @@ export function App() {
       }
       dispatch({ type: "message/pendingUser", sessionId, content: normalized });
       setDraftInput("");
-      await clientRef.current.createTurn(sessionId, {
+      await getActiveClient().createTurn(sessionId, {
         content: normalized,
         client_id: state.profile.clientId,
         metadata: { source: "desktop" },
@@ -886,7 +1092,7 @@ export function App() {
       error: null,
     }));
     try {
-      await clientRef.current.deleteSession(sessionId);
+      await getActiveClient().deleteSession(sessionId);
       const items = sessionListStateRef.current.items.filter((item) => item.sessionId !== sessionId);
       updateSessionListFromItems(items);
       updateRemoteCatalog((current) => unregisterRemoteSession(current, activeRemoteIdRef.current, sessionId));
@@ -941,10 +1147,11 @@ export function App() {
     const activatesRemote = !existing || existing.id === currentCatalog.activeRemoteId;
     persistRemoteCatalog(nextCatalog);
     if (activatesRemote) {
+      void getRemoteClient(entry.id || profile.clientId).disconnect();
       dispatch({ type: "profile/update", profile });
       dispatch({ type: "session/current", sessionId: "" });
       dispatch({ type: "sidebar/reset" });
-      void clientRef.current.disconnect().then(() => {
+      void Promise.resolve().then(() => {
         if (hasConnectableProfile(profile)) {
           connect(profile, nextCatalog.activeRemoteId);
           return;
@@ -957,6 +1164,10 @@ export function App() {
           bootstrapLoaded: false,
           eventsConnected: false,
         });
+      });
+    } else if (hasConnectableProfile(profile)) {
+      void getRemoteClient(entry.id || profile.clientId).disconnect().then(() => {
+        connect(profile, entry.id || profile.clientId);
       });
     }
   }
@@ -975,6 +1186,16 @@ export function App() {
     dispatch({ type: "session/current", sessionId: "" });
     dispatch({ type: "sidebar/reset" });
     dispatch({ type: "error/set", message: null });
+    updateRemoteRuntime(remoteId, { unreadCount: 0 });
+    const runtime = remoteRuntimeByIdRef.current[remoteId] || createRemoteRuntime();
+    dispatch({
+      type: "connection/status",
+      status: runtime.connectionStatus,
+      detail: runtime.connectionDetail,
+      reason: runtime.connectionReason,
+      bootstrapLoaded: runtime.bootstrapLoaded,
+      eventsConnected: runtime.eventsConnected,
+    });
     return target;
   }
 
@@ -983,9 +1204,13 @@ export function App() {
     if (!target) {
       return;
     }
-    await clientRef.current.disconnect();
     if (hasConnectableProfile(target.profile)) {
-      connect(target.profile, remoteId);
+      const runtime = remoteRuntimeByIdRef.current[remoteId];
+      if (runtime?.connectionStatus === "connected" || getRemoteClient(remoteId).isConnected()) {
+        await loadActiveRemoteSnapshot(remoteId, target.profile);
+      } else {
+        connect(target.profile, remoteId);
+      }
     } else {
       dispatch({
         type: "connection/status",
@@ -999,11 +1224,31 @@ export function App() {
   }
 
   async function connectRemote(remoteId: string) {
-    await selectRemote(remoteId);
+    const target = await activateRemote(remoteId);
+    if (!target) {
+      return;
+    }
+    if (hasConnectableProfile(target.profile)) {
+      connect(target.profile, remoteId);
+      return;
+    }
+    dispatch({
+      type: "connection/status",
+      status: "disconnected",
+      detail: "连接已断开",
+      reason: "closed",
+      bootstrapLoaded: false,
+      eventsConnected: false,
+    });
   }
 
-  function disconnectRemote() {
-    disconnect();
+  function disconnectRemote(remoteId = activeRemoteIdRef.current) {
+    if (remoteId === activeRemoteIdRef.current) {
+      disconnect();
+      return;
+    }
+    void getRemoteClient(remoteId).disconnect();
+    updateRemoteRuntime(remoteId, createRemoteRuntime());
   }
 
   async function reconnectRemote(remoteId: string) {
@@ -1011,7 +1256,7 @@ export function App() {
     if (!target) {
       return;
     }
-    await clientRef.current.disconnect();
+    await getRemoteClient(remoteId).disconnect();
     if (hasConnectableProfile(target.profile)) {
       connect(target.profile, remoteId);
       return;
@@ -1029,6 +1274,8 @@ export function App() {
   async function deleteRemote(remoteId: string) {
     clearPendingSessionWork();
     const removedActive = remoteCatalogRef.current.activeRemoteId === remoteId;
+    await getRemoteClient(remoteId).disconnect();
+    clientByRemoteIdRef.current.delete(remoteId);
     const nextCatalog = deleteRemoteEntry(remoteCatalogRef.current, remoteId);
     persistRemoteCatalog(nextCatalog);
     const nextActive = nextCatalog.remotes.find((entry) => entry.id === nextCatalog.activeRemoteId)!;
@@ -1036,7 +1283,6 @@ export function App() {
     dispatch({ type: "session/current", sessionId: "" });
     dispatch({ type: "sidebar/reset" });
     if (removedActive) {
-      await clientRef.current.disconnect();
       if (hasConnectableProfile(nextActive.profile)) {
         connect(nextActive.profile, nextActive.id);
       } else {
@@ -1079,7 +1325,7 @@ export function App() {
     createTask: (input) =>
       actionWithSidebarRefresh(
         () =>
-          clientRef.current.createTask({
+          getActiveClient().createTask({
             instruction: input.instruction,
             schedule: input.schedule,
             source_session_key: input.sourceSessionKey,
@@ -1090,7 +1336,7 @@ export function App() {
     updateTask: (taskId, input) =>
       actionWithSidebarRefresh(
         () =>
-          clientRef.current.updateTask(taskId, {
+          getActiveClient().updateTask(taskId, {
             instruction: input.instruction,
             schedule: input.schedule,
             target_channels: input.targetChannels,
@@ -1098,32 +1344,32 @@ export function App() {
         "任务更新失败。",
       ),
     deleteTask: (taskId) =>
-      actionWithSidebarRefresh(() => clientRef.current.deleteTask(taskId), "任务删除失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().deleteTask(taskId), "任务删除失败。"),
     enableTask: (taskId) =>
-      actionWithSidebarRefresh(() => clientRef.current.enableTask(taskId), "任务启用失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().enableTask(taskId), "任务启用失败。"),
     disableTask: (taskId) =>
-      actionWithSidebarRefresh(() => clientRef.current.disableTask(taskId), "任务停用失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().disableTask(taskId), "任务停用失败。"),
     installSkill: (input) =>
       actionWithSidebarRefresh(
         () =>
-          clientRef.current.installSkill({
+          getActiveClient().installSkill({
             source: input.source || undefined,
             upload_token: input.uploadToken || undefined,
           }),
         "Skill 安装失败。",
       ),
     uninstallSkill: (name) =>
-      actionWithSidebarRefresh(() => clientRef.current.uninstallSkill(name), "Skill 卸载失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().uninstallSkill(name), "Skill 卸载失败。"),
     createMcp: (input) =>
-      actionWithSidebarRefresh(() => clientRef.current.createMcp({ mcp: input.mcp }), "MCP 创建失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().createMcp({ mcp: input.mcp }), "MCP 创建失败。"),
     updateMcp: (name, input) =>
-      actionWithSidebarRefresh(() => clientRef.current.updateMcp(name, { mcp: input.mcp }), "MCP 更新失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().updateMcp(name, { mcp: input.mcp }), "MCP 更新失败。"),
     deleteMcp: (name) =>
-      actionWithSidebarRefresh(() => clientRef.current.deleteMcp(name), "MCP 删除失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().deleteMcp(name), "MCP 删除失败。"),
     enableMcp: (name) =>
-      actionWithSidebarRefresh(() => clientRef.current.enableMcp(name), "MCP 启用失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().enableMcp(name), "MCP 启用失败。"),
     disableMcp: (name) =>
-      actionWithSidebarRefresh(() => clientRef.current.disableMcp(name), "MCP 停用失败。"),
+      actionWithSidebarRefresh(() => getActiveClient().disableMcp(name), "MCP 停用失败。"),
     uploadSkillZip: async (file) => {
       try {
         return await uploadRemoteSkillZip(state.profile, file);
@@ -1160,6 +1406,7 @@ export function App() {
       setPreviewThemePreference={setPreviewThemePreference}
       remoteEntries={remoteCatalog.remotes}
       activeRemoteId={remoteCatalog.activeRemoteId}
+      remoteRuntimeById={remoteRuntimeById}
       sessionListState={sessionListState}
       connectRemote={(remoteId) => void connectRemote(remoteId)}
       reconnectRemote={(remoteId) => void reconnectRemote(remoteId)}
