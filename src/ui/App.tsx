@@ -481,6 +481,8 @@ export function App() {
     apiBase?: string | null;
     model?: string | null;
     clearApiKey?: boolean | null;
+    tokenPlanApiKey?: string | null;
+    clearTokenPlanApiKey?: boolean | null;
   }) {
     try {
       const response = await clientRef.current.updateProvider(input.provider, {
@@ -488,6 +490,10 @@ export function App() {
         ...(input.apiBase !== undefined ? { api_base: input.apiBase } : {}),
         ...(input.model !== undefined ? { model: input.model } : {}),
         ...(input.clearApiKey !== undefined ? { clear_api_key: input.clearApiKey } : {}),
+        ...(input.tokenPlanApiKey !== undefined ? { token_plan_api_key: input.tokenPlanApiKey } : {}),
+        ...(input.clearTokenPlanApiKey !== undefined
+          ? { clear_token_plan_api_key: input.clearTokenPlanApiKey }
+          : {}),
       });
       if (state.providerState) {
         dispatch({

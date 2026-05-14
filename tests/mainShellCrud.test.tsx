@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DesktopSidebarData, SidebarMcpItem, SidebarTaskItem } from "nomi-protocol";
+import type {
+  DesktopSidebarData,
+  ProviderStateSnapshot,
+  SidebarMcpItem,
+  SidebarTaskItem,
+} from "nomi-protocol";
 import type { ConnectionProfile, DesktopActions, TaskSchedule } from "../src/lib/types";
 import { createEmptyRemoteSessionListState } from "../src/lib/remoteSessions";
 import { createInitialDesktopState } from "../src/state/reducer";
@@ -18,6 +23,8 @@ type ShellActions = DesktopActions & {
     apiBase?: string | null;
     model?: string | null;
     clearApiKey?: boolean | null;
+    tokenPlanApiKey?: string | null;
+    clearTokenPlanApiKey?: boolean | null;
   }): Promise<boolean>;
   setActiveProvider(input: { provider: string; model?: string | null }): Promise<boolean>;
   reloadRuntime(): Promise<boolean>;
@@ -69,6 +76,50 @@ function buildSidebarData(): DesktopSidebarData {
   };
 }
 
+function buildProviderState(): ProviderStateSnapshot {
+  return {
+    active: { provider: "mimo", model: "mimo-chat" },
+    apply_mode: "reload_runtime",
+    providers: [
+      {
+        provider: "mimo",
+        display_name: "Mimo",
+        backend: "mimo",
+        builtin: true,
+        editable: true,
+        deletable: false,
+        api_key_set: true,
+        api_key: "sk-existing",
+        api_key_preview: "...ting",
+        token_plan_api_key_set: true,
+        token_plan_api_key: "tp-existing",
+        token_plan_api_key_preview: "...ting",
+        saved_model: "mimo-chat",
+        api_base: "https://api.mimo.example",
+        api_base_editable: false,
+        default_api_base: "https://api.mimo.example",
+        source: "config",
+      },
+      {
+        provider: "custom",
+        display_name: "Custom",
+        backend: "custom",
+        builtin: true,
+        editable: true,
+        deletable: false,
+        api_key_set: true,
+        api_key: "custom-existing",
+        api_key_preview: "...ing",
+        saved_model: "custom-model",
+        api_base: "https://api.custom.example",
+        api_base_editable: true,
+        default_api_base: null,
+        source: "config",
+      },
+    ],
+  };
+}
+
 function buildState() {
   const profile = buildProfile();
   const state = createInitialDesktopState(profile);
@@ -86,6 +137,7 @@ function buildState() {
     },
     sidebar: buildSidebarData(),
     sidebarReady: true,
+    providerState: buildProviderState(),
     errorText: null,
   };
 }
@@ -156,6 +208,11 @@ async function openDisclosure(title: string) {
   fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${title}\\s+\\d+`) }));
 }
 
+function openModelSettings() {
+  fireEvent.click(screen.getByRole("button", { name: "打开设置菜单" }));
+  fireEvent.click(screen.getByRole("button", { name: /模型设置/ }));
+}
+
 describe("MainShell HTTP resource actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -211,5 +268,54 @@ describe("MainShell HTTP resource actions", () => {
     fireEvent.click(within(mcpCard).getByRole("button", { name: "编辑" }));
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(actions.updateMcp).toHaveBeenCalledWith("filesystem", expect.any(Object)));
+  });
+
+  it("saves mimo provider keys without submitting read-only apiBase", async () => {
+    const actions = renderShell();
+    openModelSettings();
+
+    const apiKeyInput = screen.getByLabelText("apiKey");
+    const tokenPlanInput = screen.getByLabelText("tokenPlanApiKey");
+    expect(apiKeyInput).toHaveValue("sk-existing");
+    expect(tokenPlanInput).toHaveValue("tp-existing");
+
+    fireEvent.change(apiKeyInput, { target: { value: "sk-new" } });
+    fireEvent.change(tokenPlanInput, { target: { value: "tp-new" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => {
+      expect(actions.setProviderSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "mimo",
+          apiKey: "sk-new",
+          tokenPlanApiKey: "tp-new",
+          model: "mimo-chat",
+          clearApiKey: false,
+        }),
+      );
+    });
+    expect(actions.setProviderSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "mimo", apiBase: expect.anything() }),
+    );
+  });
+
+  it("only submits apiBase for editable custom provider", async () => {
+    const actions = renderShell();
+    openModelSettings();
+    fireEvent.click(screen.getByRole("button", { name: /Custom/ }));
+
+    const apiBaseInput = screen.getByLabelText("apiBase");
+    expect(apiBaseInput).not.toBeDisabled();
+    fireEvent.change(apiBaseInput, { target: { value: "https://new.custom.example" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => {
+      expect(actions.setProviderSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "custom",
+          apiBase: "https://new.custom.example",
+        }),
+      );
+    });
   });
 });

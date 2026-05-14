@@ -47,6 +47,8 @@ interface MainShellProps {
       apiBase?: string | null;
       model?: string | null;
       clearApiKey?: boolean | null;
+      tokenPlanApiKey?: string | null;
+      clearTokenPlanApiKey?: boolean | null;
     }): Promise<boolean>;
     setActiveProvider(input: { provider: string; model?: string | null }): Promise<boolean>;
     reloadRuntime(): Promise<boolean>;
@@ -175,7 +177,11 @@ interface ModelSettingsProviderItem {
   editable?: boolean;
   deletable?: boolean;
   api_key_set?: boolean;
+  api_key?: string | null;
   api_key_preview?: string | null;
+  token_plan_api_key_set?: boolean | null;
+  token_plan_api_key?: string | null;
+  token_plan_api_key_preview?: string | null;
   saved_model?: string | null;
   api_base?: string | null;
   source?: string | null;
@@ -184,6 +190,7 @@ interface ModelSettingsProviderItem {
 interface ModelSettingsProviderDraft {
   apiBase: string;
   apiKey: string;
+  tokenPlanApiKey: string;
   model: string;
 }
 
@@ -873,10 +880,12 @@ export function MainShell(props: MainShellProps) {
     providerManagementItems[0] ||
     null;
   const selectedProviderState = selectedProvider ? providerStateByName[selectedProvider.name] || null : null;
+  const selectedProviderIsMimo = selectedProvider?.name === "mimo";
   const selectedProviderDraft = selectedProvider
     ? modelApiBases[selectedProvider.name] || {
         apiBase: selectedProviderState?.api_base || selectedProvider.default_api_base || "",
-        apiKey: "",
+        apiKey: selectedProviderState?.api_key || "",
+        tokenPlanApiKey: selectedProviderState?.token_plan_api_key || "",
         model:
           selectedProviderState?.saved_model ||
           (activeProviderSelection?.provider === selectedProvider.name ? activeProviderSelection.model : "") ||
@@ -902,7 +911,9 @@ export function MainShell(props: MainShellProps) {
       [selectedProvider.name]: {
         ...current[selectedProvider.name],
         apiBase: current[selectedProvider.name]?.apiBase ?? selectedProvider.default_api_base ?? "",
-        apiKey: current[selectedProvider.name]?.apiKey ?? "",
+        apiKey: current[selectedProvider.name]?.apiKey ?? selectedProviderState?.api_key ?? "",
+        tokenPlanApiKey:
+          current[selectedProvider.name]?.tokenPlanApiKey ?? selectedProviderState?.token_plan_api_key ?? "",
         model: current[selectedProvider.name]?.model ?? "",
         [field]: value,
       },
@@ -1082,7 +1093,8 @@ export function MainShell(props: MainShellProps) {
       const providerState = providerStateByName[provider.name];
       nextDrafts[provider.name] = {
         apiBase: providerState?.api_base || provider.default_api_base || "",
-        apiKey: "",
+        apiKey: providerState?.api_key || "",
+        tokenPlanApiKey: providerState?.token_plan_api_key || "",
         model:
           providerState?.saved_model ||
           (activeProviderSelection?.provider === provider.name ? activeProviderSelection.model : "") ||
@@ -1224,9 +1236,14 @@ export function MainShell(props: MainShellProps) {
     const ok = await actions.setProviderSettings({
       provider: selectedProvider.name,
       apiKey: selectedProviderDraft.apiKey.trim() || null,
-      apiBase: selectedProvider.api_base_editable ? selectedProviderDraft.apiBase.trim() || null : null,
+      ...(selectedProvider.api_base_editable
+        ? { apiBase: selectedProviderDraft.apiBase.trim() || null }
+        : {}),
       model: selectedProviderDraft.model.trim() || null,
       clearApiKey: false,
+      ...(selectedProviderIsMimo
+        ? { tokenPlanApiKey: selectedProviderDraft.tokenPlanApiKey.trim() || null }
+        : {}),
     });
     if (!ok) {
       setProviderSettingsBusyProvider(null);
@@ -1248,6 +1265,23 @@ export function MainShell(props: MainShellProps) {
       return;
     }
     updateSelectedProviderDraft("apiKey", "");
+  }
+
+  async function handleClearProviderTokenPlanApiKey() {
+    if (!selectedProvider || !selectedProviderIsMimo) {
+      return;
+    }
+    setProviderSettingsFeedback(null);
+    setProviderSettingsBusyProvider(selectedProvider.name);
+    const ok = await actions.setProviderSettings({
+      provider: selectedProvider.name,
+      clearTokenPlanApiKey: true,
+    });
+    if (!ok) {
+      setProviderSettingsBusyProvider(null);
+      return;
+    }
+    updateSelectedProviderDraft("tokenPlanApiKey", "");
   }
 
   async function handleSetActiveProvider() {
@@ -2469,6 +2503,39 @@ export function MainShell(props: MainShellProps) {
                             {selectedProviderIsSaving ? "处理中..." : "清空已保存 apiKey"}
                           </button>
                         </div>
+                      ) : null}
+                      {selectedProviderIsMimo ? (
+                        <>
+                          {selectedProviderState?.token_plan_api_key_set ? (
+                            <div className="overlay-hint">
+                              已保存的 Mimo Token Plan key：
+                              {selectedProviderState.token_plan_api_key_preview || "已设置"}
+                            </div>
+                          ) : null}
+                          <label className="model-settings-field">
+                            <span className="model-settings-field-label">tokenPlanApiKey</span>
+                            <input
+                              type="password"
+                              value={selectedProviderDraft.tokenPlanApiKey}
+                              onChange={(event) =>
+                                updateSelectedProviderDraft("tokenPlanApiKey", event.target.value)
+                              }
+                              placeholder="请输入 Mimo Token Plan key"
+                            />
+                          </label>
+                          {selectedProviderState?.token_plan_api_key_set ? (
+                            <div className="model-settings-actions compact">
+                              <button
+                                className="sidebar-inline-button secondary"
+                                type="button"
+                                onClick={() => void handleClearProviderTokenPlanApiKey()}
+                                disabled={providerActionBusy}
+                              >
+                                {selectedProviderIsSaving ? "处理中..." : "清空 Mimo Token Plan key"}
+                              </button>
+                            </div>
+                          ) : null}
+                        </>
                       ) : null}
                       <label className="model-settings-field">
                         <span className="model-settings-field-label">model</span>
