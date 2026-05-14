@@ -53,6 +53,8 @@ export interface RemoteRuntimeState {
   errorText: string | null;
   unreadCount: number;
   lastActivityAt: number | null;
+  lastNotificationSessionId: string | null;
+  lastNotificationMessage: string | null;
 }
 
 export type RemoteRuntimeById = Record<string, RemoteRuntimeState>;
@@ -66,6 +68,8 @@ const DISCONNECTED_REMOTE_RUNTIME: RemoteRuntimeState = {
   errorText: null,
   unreadCount: 0,
   lastActivityAt: null,
+  lastNotificationSessionId: null,
+  lastNotificationMessage: null,
 };
 
 type ResolvedTheme = "light" | "dark";
@@ -192,6 +196,34 @@ function pickLatestDesktopSession(items: RemoteSessionItem[]): RemoteSessionItem
 
 function normalizeSessions(items: Array<Record<string, unknown>>): RemoteSessionItem[] {
   return items.map((item) => normalizeRemoteSessionItem(item));
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readRemoteEventSessionId(event: SseEventEnvelope): string | null {
+  const data = (event.data || {}) as Record<string, unknown>;
+  const direct = readString(data.session_id);
+  if (direct) {
+    return direct;
+  }
+  const session = data.session && typeof data.session === "object"
+    ? (data.session as Record<string, unknown>)
+    : null;
+  return readString(session?.session_id) || readString(session?.key);
+}
+
+function readRemoteEventMessageSummary(event: SseEventEnvelope): string | null {
+  const data = (event.data || {}) as Record<string, unknown>;
+  const message = data.message && typeof data.message === "object"
+    ? (data.message as Record<string, unknown>)
+    : null;
+  const content = readString(message?.content);
+  if (!content) {
+    return null;
+  }
+  return content.length > 42 ? `${content.slice(0, 42)}...` : content;
 }
 
 function createRemoteRuntime(patch?: Partial<RemoteRuntimeState>): RemoteRuntimeState {
@@ -477,12 +509,16 @@ export function App() {
       const shouldIncrementUnread =
         remoteId !== activeRemoteIdRef.current &&
         (event.type === "session.message_appended" || event.type === "session.updated");
+      const sessionId = shouldIncrementUnread ? readRemoteEventSessionId(event) : null;
+      const messageSummary = shouldIncrementUnread ? readRemoteEventMessageSummary(event) : null;
       const next = {
         ...current,
         [remoteId]: {
           ...previous,
           lastActivityAt: Date.now(),
           unreadCount: shouldIncrementUnread ? previous.unreadCount + 1 : previous.unreadCount,
+          lastNotificationSessionId: sessionId || previous.lastNotificationSessionId,
+          lastNotificationMessage: messageSummary || previous.lastNotificationMessage,
         },
       };
       remoteRuntimeByIdRef.current = next;
@@ -1186,7 +1222,11 @@ export function App() {
     dispatch({ type: "session/current", sessionId: "" });
     dispatch({ type: "sidebar/reset" });
     dispatch({ type: "error/set", message: null });
-    updateRemoteRuntime(remoteId, { unreadCount: 0 });
+    updateRemoteRuntime(remoteId, {
+      unreadCount: 0,
+      lastNotificationSessionId: null,
+      lastNotificationMessage: null,
+    });
     const runtime = remoteRuntimeByIdRef.current[remoteId] || createRemoteRuntime();
     dispatch({
       type: "connection/status",
@@ -1220,6 +1260,24 @@ export function App() {
         bootstrapLoaded: false,
         eventsConnected: false,
       });
+    }
+  }
+
+  async function selectRemoteSession(remoteId: string, sessionId: string) {
+    const target = await activateRemote(remoteId);
+    if (!target) {
+      return;
+    }
+    if (hasConnectableProfile(target.profile)) {
+      const runtime = remoteRuntimeByIdRef.current[remoteId];
+      if (runtime?.connectionStatus === "connected" || getRemoteClient(remoteId).isConnected()) {
+        await loadActiveRemoteSnapshot(remoteId, target.profile);
+      } else {
+        connect(target.profile, remoteId);
+      }
+    }
+    if (sessionId.trim()) {
+      await selectSession(sessionId);
     }
   }
 
@@ -1412,6 +1470,7 @@ export function App() {
       reconnectRemote={(remoteId) => void reconnectRemote(remoteId)}
       disconnectRemote={disconnectRemote}
       selectSession={(sessionId) => void selectSession(sessionId)}
+      selectRemoteSession={(remoteId, sessionId) => void selectRemoteSession(remoteId, sessionId)}
       saveRemote={saveRemoteEntryDraft}
       deleteRemote={(remoteId) => void deleteRemote(remoteId)}
       clearGlobalError={() => dispatch({ type: "error/set", message: null })}

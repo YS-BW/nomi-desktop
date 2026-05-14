@@ -67,6 +67,7 @@ interface MainShellProps {
   reconnectRemote(remoteId: string): void;
   disconnectRemote(remoteId?: string): void;
   selectSession(sessionId: string): void;
+  selectRemoteSession(remoteId: string, sessionId: string): void;
   saveRemote(input: {
     id?: string;
     name: string;
@@ -157,11 +158,21 @@ interface ProviderSettingsFeedbackState {
   message: string;
 }
 
+interface RemoteFeedbackState {
+  tone: "error" | "success";
+  message: string;
+}
+
 interface BannerNotificationState {
   id: string;
   tone: "error" | "success";
   message: string;
   source: "global" | "remote" | "task" | "skill" | "provider";
+  action?: {
+    label: string;
+    remoteId: string;
+    sessionId: string;
+  };
 }
 
 interface ModelSettingsProviderItem {
@@ -610,13 +621,23 @@ function SidebarMoreMenu(props: {
 function BannerNotification(props: {
   tone: "error" | "success";
   message: string;
+  actionLabel?: string;
+  onAction?: () => void;
   onClose(): void;
 }) {
-  const { tone, message, onClose } = props;
+  const { tone, message, actionLabel, onAction, onClose } = props;
   return (
     <div className="banner-notification-layer" role="status" aria-live="polite">
       <div className={`banner-notification ${tone}`}>
-        <div className="banner-notification-copy">{message}</div>
+        <button
+          type="button"
+          className="banner-notification-copy"
+          onClick={onAction}
+          disabled={!onAction}
+        >
+          {message}
+          {actionLabel ? <span className="banner-notification-action">{actionLabel}</span> : null}
+        </button>
         <button
           type="button"
           className="banner-notification-close"
@@ -766,6 +787,7 @@ export function MainShell(props: MainShellProps) {
     reconnectRemote,
     disconnectRemote,
     selectSession,
+    selectRemoteSession,
     saveRemote,
     deleteRemote,
     toggleSidebar,
@@ -798,7 +820,7 @@ export function MainShell(props: MainShellProps) {
   });
   const [remoteModal, setRemoteModal] = useState<RemoteFormState | null>(null);
   const [remoteFormError, setRemoteFormError] = useState<string | null>(null);
-  const [remoteFeedback, setRemoteFeedback] = useState<string | null>(null);
+  const [remoteFeedback, setRemoteFeedback] = useState<RemoteFeedbackState | null>(null);
   const [mcpModal, setMcpModal] = useState<McpFormState | null>(null);
   const [mcpFormError, setMcpFormError] = useState<string | null>(null);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
@@ -1192,18 +1214,54 @@ export function MainShell(props: MainShellProps) {
   }, [activeRemoteId, state.currentSessionId]);
 
   useEffect(() => {
+    const backgroundRemote = remoteEntries.find((entry) => {
+      const runtime = remoteRuntimeById[entry.id];
+      return entry.id !== activeRemoteId && runtime?.unreadCount && runtime.lastNotificationSessionId;
+    });
+    if (!backgroundRemote) {
+      return;
+    }
+    const runtime = remoteRuntimeById[backgroundRemote.id];
+    if (!runtime?.lastNotificationSessionId) {
+      return;
+    }
+    const message = runtime.lastNotificationMessage
+      ? `${backgroundRemote.name} 有新消息：${runtime.lastNotificationMessage}`
+      : `${backgroundRemote.name} 有新消息`;
+    const key = `remote-message::${backgroundRemote.id}::${runtime.lastNotificationSessionId}::${runtime.unreadCount}`;
+    if (processedNotificationKeyRef.current === key) {
+      return;
+    }
+    processedNotificationKeyRef.current = key;
+    setBannerNotification({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      tone: "success",
+      message,
+      source: "remote",
+      action: {
+        label: "查看",
+        remoteId: backgroundRemote.id,
+        sessionId: runtime.lastNotificationSessionId,
+      },
+    });
+  }, [activeRemoteId, remoteEntries, remoteRuntimeById, state.currentSessionId]);
+
+  useEffect(() => {
     const candidates: Array<Omit<BannerNotificationState, "id"> | null> = [
       state.errorText
         ? { tone: "error", message: state.errorText, source: "global" }
         : null,
       remoteFeedback
-        ? { tone: "error", message: remoteFeedback, source: "remote" }
+        ? { tone: remoteFeedback.tone, message: remoteFeedback.message, source: "remote" }
         : null,
       taskFeedback
         ? { tone: taskFeedback.tone, message: taskFeedback.message, source: "task" }
         : null,
       skillFeedback
         ? { tone: skillFeedback.tone, message: skillFeedback.message, source: "skill" }
+        : null,
+      providerSettingsFeedback
+        ? { tone: providerSettingsFeedback.tone, message: providerSettingsFeedback.message, source: "provider" }
         : null,
     ];
     const nextNotification = candidates.find(Boolean) || null;
@@ -1494,10 +1552,10 @@ export function MainShell(props: MainShellProps) {
 
   function handleRemoteDelete(entry: DesktopRemoteEntry) {
     if (remoteEntries.length <= 1) {
-      setRemoteFeedback("至少保留一个远端，当前最后一个不能删除。");
+      setRemoteFeedback({ tone: "error", message: "至少保留一个远端，当前最后一个不能删除。" });
       return;
     }
-    setRemoteFeedback(`已删除远端“${entry.name}”。`);
+    setRemoteFeedback({ tone: "success", message: `已删除远端“${entry.name}”。` });
     deleteRemote(entry.id);
   }
 
@@ -1720,6 +1778,18 @@ export function MainShell(props: MainShellProps) {
           key={bannerNotification.id}
           tone={bannerNotification.tone}
           message={bannerNotification.message}
+          actionLabel={bannerNotification.action?.label}
+          onAction={
+            bannerNotification.action
+              ? () => {
+                  selectRemoteSession(
+                    bannerNotification.action!.remoteId,
+                    bannerNotification.action!.sessionId,
+                  );
+                  dismissBannerNotification("remote");
+                }
+              : undefined
+          }
           onClose={() => dismissBannerNotification()}
         />
       ) : null}
@@ -2587,15 +2657,6 @@ export function MainShell(props: MainShellProps) {
                           ? " · 修改后需要 reload runtime 才会完整生效。"
                           : ""}
                       </div>
-                      {providerSettingsFeedback ? (
-                        <div
-                          className={
-                            providerSettingsFeedback.tone === "error" ? "overlay-error" : "overlay-hint"
-                          }
-                        >
-                          {providerSettingsFeedback.message}
-                        </div>
-                      ) : null}
                       <div className="model-settings-actions">
                         <button
                           className="sidebar-inline-button"

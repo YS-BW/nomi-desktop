@@ -201,6 +201,8 @@ function renderShell(overrides: { actions?: Partial<ShellActions>; shellProps?: 
           errorText: null,
           unreadCount: 0,
           lastActivityAt: null,
+          lastNotificationSessionId: null,
+          lastNotificationMessage: null,
         },
       }}
       sessionListState={createEmptyRemoteSessionListState()}
@@ -208,6 +210,7 @@ function renderShell(overrides: { actions?: Partial<ShellActions>; shellProps?: 
       reconnectRemote={overrides.shellProps?.reconnectRemote || vi.fn()}
       disconnectRemote={overrides.shellProps?.disconnectRemote || vi.fn()}
       selectSession={overrides.shellProps?.selectSession || vi.fn()}
+      selectRemoteSession={overrides.shellProps?.selectRemoteSession || vi.fn()}
       saveRemote={overrides.shellProps?.saveRemote || vi.fn()}
       deleteRemote={overrides.shellProps?.deleteRemote || vi.fn()}
       toggleSidebar={vi.fn()}
@@ -266,6 +269,8 @@ describe("MainShell HTTP resource actions", () => {
             errorText: null,
             unreadCount: 0,
             lastActivityAt: null,
+            lastNotificationSessionId: null,
+            lastNotificationMessage: null,
           },
           "remote-bg": {
             connectionStatus: "connected",
@@ -276,6 +281,8 @@ describe("MainShell HTTP resource actions", () => {
             errorText: null,
             unreadCount: 3,
             lastActivityAt: 1,
+            lastNotificationSessionId: null,
+            lastNotificationMessage: null,
           },
         },
         disconnectRemote,
@@ -290,6 +297,110 @@ describe("MainShell HTTP resource actions", () => {
     expect(within(remoteSection as HTMLElement).getByText("3")).toBeInTheDocument();
     fireEvent.click(within(remoteSection as HTMLElement).getByRole("button", { name: "断开" }));
     expect(disconnectRemote).toHaveBeenCalledWith("remote-bg");
+  });
+
+  it("shows remote delete feedback through the unified top notification", async () => {
+    const profile = buildProfile();
+    const deleteRemote = vi.fn();
+    renderShell({
+      shellProps: {
+        remoteEntries: [
+          { id: "remote-main", name: "主远端", profile, sessionIds: [] },
+          {
+            id: "remote-bg",
+            name: "后台远端",
+            profile: { ...profile, clientId: "remote-bg", host: "10.0.0.2" },
+            sessionIds: [],
+          },
+        ],
+        remoteRuntimeById: {
+          "remote-main": {
+            connectionStatus: "connected",
+            connectionDetail: "已连接",
+            connectionReason: "idle",
+            bootstrapLoaded: true,
+            eventsConnected: true,
+            errorText: null,
+            unreadCount: 0,
+            lastActivityAt: null,
+            lastNotificationSessionId: null,
+            lastNotificationMessage: null,
+          },
+          "remote-bg": {
+            connectionStatus: "disconnected",
+            connectionDetail: "连接已断开",
+            connectionReason: "closed",
+            bootstrapLoaded: false,
+            eventsConnected: false,
+            errorText: null,
+            unreadCount: 0,
+            lastActivityAt: null,
+            lastNotificationSessionId: null,
+            lastNotificationMessage: null,
+          },
+        },
+        deleteRemote,
+      },
+    });
+
+    await openDisclosure("远端");
+    const remoteSection = screen.getByText("后台远端").closest("article");
+    expect(remoteSection).not.toBeNull();
+    fireEvent.click(within(remoteSection as HTMLElement).getByRole("button", { name: "更多操作" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+
+    expect(deleteRemote).toHaveBeenCalledWith("remote-bg");
+    expect(await screen.findByRole("status")).toHaveTextContent("已删除远端“后台远端”。");
+  });
+
+  it("shows clickable top notification for background remote messages", async () => {
+    const profile = buildProfile();
+    const selectRemoteSession = vi.fn();
+    renderShell({
+      shellProps: {
+        remoteEntries: [
+          { id: "remote-main", name: "主远端", profile, sessionIds: [] },
+          {
+            id: "remote-bg",
+            name: "后台远端",
+            profile: { ...profile, clientId: "remote-bg", host: "10.0.0.2" },
+            sessionIds: [],
+          },
+        ],
+        remoteRuntimeById: {
+          "remote-main": {
+            connectionStatus: "connected",
+            connectionDetail: "已连接",
+            connectionReason: "idle",
+            bootstrapLoaded: true,
+            eventsConnected: true,
+            errorText: null,
+            unreadCount: 0,
+            lastActivityAt: null,
+            lastNotificationSessionId: null,
+            lastNotificationMessage: null,
+          },
+          "remote-bg": {
+            connectionStatus: "connected",
+            connectionDetail: "已连接",
+            connectionReason: "idle",
+            bootstrapLoaded: true,
+            eventsConnected: true,
+            errorText: null,
+            unreadCount: 1,
+            lastActivityAt: 1,
+            lastNotificationSessionId: "desktop:bg-session",
+            lastNotificationMessage: "后台消息",
+          },
+        },
+        selectRemoteSession,
+      },
+    });
+
+    const banner = await screen.findByRole("status");
+    expect(banner).toHaveTextContent("后台远端 有新消息：后台消息");
+    fireEvent.click(within(banner).getByRole("button", { name: /后台远端 有新消息/ }));
+    expect(selectRemoteSession).toHaveBeenCalledWith("remote-bg", "desktop:bg-session");
   });
 
   it("creates a task through explicit createTask action", async () => {
@@ -372,11 +483,8 @@ describe("MainShell HTTP resource actions", () => {
         }),
       );
     });
-    expect(screen.getByText("Provider 设置已保存，必要时请 reload runtime 生效。")).toBeInTheDocument();
-    const banner = screen.queryByRole("status");
-    if (banner) {
-      expect(banner).not.toHaveTextContent("Provider 设置已保存");
-    }
+    const banner = await screen.findByRole("status");
+    expect(banner).toHaveTextContent("Provider 设置已保存，必要时请 reload runtime 生效。");
     expect(actions.setProviderSettings).not.toHaveBeenCalledWith(
       expect.objectContaining({ provider: "mimo", apiBase: expect.anything() }),
     );
@@ -437,6 +545,6 @@ describe("MainShell HTTP resource actions", () => {
 
     await waitFor(() => expect(actions.reloadRuntime).toHaveBeenCalledOnce());
     await waitFor(() => expect(screen.getByRole("button", { name: "Reload Runtime" })).toBeEnabled());
-    expect(screen.getAllByText("Runtime 已重新加载。").length).toBeGreaterThan(0);
+    expect(await screen.findByRole("status")).toHaveTextContent("Runtime 已重新加载。");
   });
 });

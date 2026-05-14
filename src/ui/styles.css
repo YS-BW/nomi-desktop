@@ -1511,10 +1511,30 @@ textarea {
 .banner-notification-copy {
   flex: 1 1 auto;
   min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
   font-size: 13px;
   line-height: 1.45;
   color: var(--text-primary);
+  text-align: left;
   word-break: break-word;
+}
+
+.banner-notification-copy:disabled {
+  cursor: default;
+}
+
+.banner-notification-copy:not(:disabled) {
+  cursor: pointer;
+}
+
+.banner-notification-action {
+  display: inline-flex;
+  margin-left: 10px;
+  color: var(--accent);
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .banner-notification-close {
