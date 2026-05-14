@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../src/ui/App";
 import type { BootstrapResponse, SessionMessagesResponse, SessionResponse } from "../src/lib/types";
 
 const mockRandomUUID = vi.fn(() => "session-uuid");
+const sendSystemNotification = vi.hoisted(() => vi.fn(async () => true));
 
 const storeMocks = vi.hoisted(() => ({
   remotes: [
@@ -60,6 +61,11 @@ vi.mock("../src/lib/store", () => ({
     ),
   })),
   deleteRemoteEntry: vi.fn((catalog) => catalog),
+}));
+
+vi.mock("../src/lib/systemNotifications", () => ({
+  sendSystemNotification,
+  resetSystemNotificationPermissionCache: vi.fn(),
 }));
 
 type MockConnectCallback = {
@@ -131,6 +137,7 @@ describe("App HTTP/SSE native session flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     connectCalls.length = 0;
+    bootstrapPayload.sessions = [];
     storeMocks.remotes = [
       {
         id: "test-client",
@@ -148,6 +155,10 @@ describe("App HTTP/SSE native session flow", () => {
       },
     ];
     vi.stubGlobal("crypto", { randomUUID: mockRandomUUID });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation(() => ({
@@ -208,5 +219,124 @@ describe("App HTTP/SSE native session flow", () => {
       expect.objectContaining({ content: "你好", client_id: "test-client" }),
     ));
     expect(screen.getByText("你好")).toBeInTheDocument();
+  });
+
+  it("sends a system notification for background remote messages", async () => {
+    storeMocks.remotes = [
+      ...storeMocks.remotes,
+      {
+        id: "second-client",
+        name: "第二远端",
+        profile: {
+          host: "127.0.0.1",
+          port: "8766",
+          token: "second-token",
+          clientId: "second-client",
+          defaultSessionId: "",
+          lastBoundSessionId: "",
+          themePreference: "system",
+        },
+        sessionIds: [],
+      },
+    ];
+
+    render(<App />);
+    await waitFor(() => expect(connectCalls).toHaveLength(2));
+
+    act(() => {
+      connectCalls[1].onEvent?.({
+        id: "event-1",
+        type: "session.message_appended",
+        created_at_ms: 1,
+        data: {
+          session_id: "desktop:second-client:session-1",
+          index: 0,
+          message: { role: "assistant", content: "后台远端回复" },
+        },
+      });
+    });
+
+    await waitFor(() => expect(sendSystemNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Nomi - 第二远端",
+        body: "Nomi 回复：后台远端回复",
+        group: "remote:second-client",
+      }),
+    ));
+  });
+
+  it("does not send a system notification for focused current-session messages", async () => {
+    bootstrapPayload.sessions = [
+      {
+        key: "desktop:test-client:session-current",
+        session_id: "desktop:test-client:session-current",
+        title: null,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        message_count: 0,
+        archived: false,
+        source: "desktop",
+      },
+    ];
+    render(<App />);
+    await waitFor(() => expect(mockLoadMessages).toHaveBeenCalledWith(
+      "desktop:test-client:session-current",
+      expect.objectContaining({ limit: 100 }),
+    ));
+
+    act(() => {
+      connectCalls[0].onEvent?.({
+        id: "event-current",
+        type: "session.message_appended",
+        created_at_ms: 1,
+        data: {
+          session_id: "desktop:test-client:session-current",
+          index: 0,
+          message: { role: "assistant", content: "当前回复" },
+        },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText("当前回复")).toBeInTheDocument());
+    expect(sendSystemNotification).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates repeated system notifications for the same message", async () => {
+    storeMocks.remotes = [
+      ...storeMocks.remotes,
+      {
+        id: "second-client",
+        name: "第二远端",
+        profile: {
+          host: "127.0.0.1",
+          port: "8766",
+          token: "second-token",
+          clientId: "second-client",
+          defaultSessionId: "",
+          lastBoundSessionId: "",
+          themePreference: "system",
+        },
+        sessionIds: [],
+      },
+    ];
+    render(<App />);
+    await waitFor(() => expect(connectCalls).toHaveLength(2));
+
+    const event = {
+      id: "event-dup",
+      type: "session.message_appended",
+      created_at_ms: 1,
+      data: {
+        session_id: "desktop:second-client:session-1",
+        index: 0,
+        message: { role: "assistant", content: "重复消息" },
+      },
+    };
+    act(() => {
+      connectCalls[1].onEvent?.(event);
+      connectCalls[1].onEvent?.(event);
+    });
+
+    await waitFor(() => expect(sendSystemNotification).toHaveBeenCalledTimes(1));
   });
 });

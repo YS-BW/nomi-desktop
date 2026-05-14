@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "允许 desktop 主窗口使用本地 core 与 store 能力。",
   "windows": ["main"],
-  "permissions": ["core:default", "store:default"]
+  "permissions": ["core:default", "store:default", "notification:default"]
 }

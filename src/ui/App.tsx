@@ -39,10 +39,12 @@ import {
 } from "../lib/themeAccent";
 import { createInitialDesktopState, desktopReducer, type DesktopAppState } from "../state/reducer";
 import { RemoteApiError, RemoteClient } from "../transport/remoteClient";
+import { sendSystemNotification } from "../lib/systemNotifications";
 import { MainShell } from "./MainShell";
 
 const HISTORY_LIMIT = 100;
 const SESSION_PAGE_SIZE = 100;
+const SYSTEM_NOTIFICATION_SUMMARY_LIMIT = 96;
 
 export interface RemoteRuntimeState {
   connectionStatus: "disconnected" | "connecting" | "connected" | "error";
@@ -202,6 +204,20 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function normalizeNotificationText(value: string): string {
+  return value
+    .replace(/```[\s\S]*?```/g, "代码片段")
+    .replace(/!\[[^\]]*]\([^)]*\)/g, "图片")
+    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
+    .replace(/[*_`>#-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateText(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit)}...` : value;
+}
+
 function readRemoteEventSessionId(event: SseEventEnvelope): string | null {
   const data = (event.data || {}) as Record<string, unknown>;
   const direct = readString(data.session_id);
@@ -223,7 +239,39 @@ function readRemoteEventMessageSummary(event: SseEventEnvelope): string | null {
   if (!content) {
     return null;
   }
-  return content.length > 42 ? `${content.slice(0, 42)}...` : content;
+  return truncateText(normalizeNotificationText(content), 42);
+}
+
+function readRemoteEventRole(event: SseEventEnvelope): string | null {
+  const data = (event.data || {}) as Record<string, unknown>;
+  const message = data.message && typeof data.message === "object"
+    ? (data.message as Record<string, unknown>)
+    : null;
+  return readString(message?.role) || readString(message?.kind);
+}
+
+function createSystemNotificationKey(remoteId: string, event: SseEventEnvelope): string | null {
+  const sessionId = readRemoteEventSessionId(event);
+  if (!sessionId) {
+    return null;
+  }
+  const data = (event.data || {}) as Record<string, unknown>;
+  const message = data.message && typeof data.message === "object"
+    ? (data.message as Record<string, unknown>)
+    : null;
+  const explicitId = readString(message?.id);
+  const index = typeof data.index === "number" ? String(data.index) : null;
+  const updatedAt =
+    typeof data.updated_at_ms === "number"
+      ? String(data.updated_at_ms)
+      : typeof event.created_at_ms === "number"
+        ? String(event.created_at_ms)
+        : null;
+  return [
+    remoteId,
+    sessionId,
+    explicitId || index || event.id || updatedAt || readRemoteEventMessageSummary(event) || "message",
+  ].join("::");
 }
 
 function createRemoteRuntime(patch?: Partial<RemoteRuntimeState>): RemoteRuntimeState {
@@ -274,6 +322,8 @@ export function App() {
   const sessionListStateRef = useRef(sessionListState);
   const sessionListRequestModeRef = useRef<"replace" | "append">("replace");
   const resyncInFlightRef = useRef(false);
+  const appFocusedRef = useRef(true);
+  const deliveredSystemNotificationKeysRef = useRef(new Set<string>());
   const resolvedTheme = useResolvedTheme(previewThemePreference ?? state.profile.themePreference);
 
   useEffect(() => {
@@ -303,6 +353,47 @@ export function App() {
   useEffect(() => {
     applyDocumentTheme(resolvedTheme, state.profile.accentColor || DEFAULT_ACCENT_COLOR);
   }, [resolvedTheme, state.profile.accentColor]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlistenFocus: (() => void) | null = null;
+    const handleWindowFocus = () => {
+      appFocusedRef.current = true;
+    };
+    const handleWindowBlur = () => {
+      appFocusedRef.current = false;
+    };
+    const updateBrowserFocus = () => {
+      appFocusedRef.current =
+        typeof document === "undefined" || document.visibilityState === "visible";
+    };
+    updateBrowserFocus();
+    const loadTauriFocus = async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        if (disposed) {
+          return;
+        }
+        const currentWindow = getCurrentWindow();
+        appFocusedRef.current = await currentWindow.isFocused();
+        unlistenFocus = await currentWindow.onFocusChanged(({ payload }) => {
+          appFocusedRef.current = Boolean(payload);
+        });
+      } catch {
+        window.addEventListener("focus", handleWindowFocus);
+        window.addEventListener("blur", handleWindowBlur);
+      }
+    };
+    void loadTauriFocus();
+    document.addEventListener("visibilitychange", updateBrowserFocus);
+    return () => {
+      disposed = true;
+      unlistenFocus?.();
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("blur", handleWindowBlur);
+      document.removeEventListener("visibilitychange", updateBrowserFocus);
+    };
+  }, []);
 
   useEffect(() => () => {
     for (const client of clientByRemoteIdRef.current.values()) {
@@ -500,6 +591,38 @@ export function App() {
       };
       remoteRuntimeByIdRef.current = next;
       return next;
+    });
+  }
+
+  function maybeNotifySystemMessage(remoteId: string, event: SseEventEnvelope) {
+    if (event.type !== "session.message_appended") {
+      return;
+    }
+    const sessionId = readRemoteEventSessionId(event);
+    if (!sessionId) {
+      return;
+    }
+    const isActiveRemote = remoteId === activeRemoteIdRef.current;
+    const isCurrentSession = isActiveRemote && sessionId === stateRef.current.currentSessionId;
+    if (isCurrentSession && appFocusedRef.current) {
+      return;
+    }
+    const key = createSystemNotificationKey(remoteId, event);
+    if (!key || deliveredSystemNotificationKeysRef.current.has(key)) {
+      return;
+    }
+    deliveredSystemNotificationKeysRef.current.add(key);
+    const remoteName =
+      remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteId)?.name || "远端";
+    const role = readRemoteEventRole(event);
+    const prefix = role === "user" ? "用户消息" : role === "assistant" ? "Nomi 回复" : "新消息";
+    const summary =
+      readRemoteEventMessageSummary(event) || (role === "assistant" ? "Nomi 有新的回复" : "有新的消息");
+    void sendSystemNotification({
+      title: `Nomi - ${remoteName}`,
+      body: `${prefix}：${truncateText(summary, SYSTEM_NOTIFICATION_SUMMARY_LIMIT)}`,
+      group: `remote:${remoteId}`,
+      key,
     });
   }
 
@@ -756,6 +879,7 @@ export function App() {
   }
 
   function handleSseEvent(remoteId: string, event: SseEventEnvelope) {
+    maybeNotifySystemMessage(remoteId, event);
     markRemoteActivity(remoteId, event);
     if (remoteId !== activeRemoteIdRef.current) {
       return;
