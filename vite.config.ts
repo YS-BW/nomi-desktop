@@ -55,6 +55,7 @@ async function readRequestBody(req: IncomingMessage): Promise<Buffer> {
 }
 
 export default defineConfig({
+  base: "./",
   plugins: [
     react(),
     {
