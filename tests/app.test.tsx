@@ -265,6 +265,45 @@ describe("App HTTP/SSE native session flow", () => {
     ));
   });
 
+  it("does not notify for background user messages", async () => {
+    storeMocks.remotes = [
+      ...storeMocks.remotes,
+      {
+        id: "second-client",
+        name: "第二远端",
+        profile: {
+          host: "127.0.0.1",
+          port: "8766",
+          token: "second-token",
+          clientId: "second-client",
+          defaultSessionId: "",
+          lastBoundSessionId: "",
+          themePreference: "system",
+        },
+        sessionIds: [],
+      },
+    ];
+
+    render(<App />);
+    await waitFor(() => expect(connectCalls).toHaveLength(2));
+
+    act(() => {
+      connectCalls[1].onEvent?.({
+        id: "event-user",
+        type: "session.message_appended",
+        created_at_ms: 1,
+        data: {
+          session_id: "desktop:second-client:session-1",
+          index: 0,
+          message: { role: "user", content: "后台用户消息" },
+        },
+      });
+    });
+
+    expect(sendSystemNotification).not.toHaveBeenCalled();
+    expect(screen.queryByText("1")).not.toBeInTheDocument();
+  });
+
   it("does not send a system notification for focused current-session messages", async () => {
     bootstrapPayload.sessions = [
       {

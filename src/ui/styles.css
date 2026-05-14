@@ -719,6 +719,19 @@ textarea {
   gap: 4px;
 }
 
+.sidebar-entity-card.remote-card {
+  cursor: pointer;
+}
+
+.sidebar-entity-card.remote-card:hover {
+  background: var(--sidebar-card-hover-surface);
+  border-color: var(--sidebar-card-border-hover);
+}
+
+.sidebar-entity-card.remote-card.active {
+  cursor: default;
+}
+
 .sidebar-entity-title-row {
   display: flex;
   align-items: flex-start;
@@ -2763,9 +2776,62 @@ textarea {
   background: var(--surface-200);
 }
 
+.markdown-inline-code {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  vertical-align: middle;
+  border-radius: 10px;
+  background: var(--surface-200);
+}
+
+.markdown-inline-code code {
+  min-width: 0;
+  max-width: min(100%, 72ch);
+  overflow-x: auto;
+  background: transparent;
+}
+
+.markdown-inline-code-copy,
+.markdown-code-copy {
+  border: 1px solid var(--border-strong);
+  background: var(--surface-100);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.markdown-inline-code-copy {
+  flex: 0 0 auto;
+  align-self: stretch;
+  border-width: 0 0 0 1px;
+  border-radius: 0 10px 10px 0;
+  padding: 0 7px;
+}
+
+.markdown-code-block {
+  display: block;
+  position: relative;
+}
+
+.markdown-code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border-radius: 999px;
+  padding: 5px 9px;
+}
+
+.markdown-inline-code-copy:hover,
+.markdown-code-copy:hover {
+  color: var(--text-primary);
+  background: var(--surface-150);
+}
+
 .message-surface pre {
   margin: 12px 0;
-  padding: 14px 16px;
+  padding: 38px 16px 14px;
   border-radius: 16px;
   overflow: auto;
   background: var(--code-surface);

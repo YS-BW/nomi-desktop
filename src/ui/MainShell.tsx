@@ -66,6 +66,7 @@ interface MainShellProps {
   connectRemote(remoteId: string): void;
   reconnectRemote(remoteId: string): void;
   disconnectRemote(remoteId?: string): void;
+  selectRemote(remoteId: string): void;
   selectSession(sessionId: string): void;
   selectRemoteSession(remoteId: string, sessionId: string): void;
   saveRemote(input: {
@@ -592,7 +593,10 @@ function SidebarMoreMenu(props: {
         type="button"
         className="sidebar-inline-button secondary sidebar-more-trigger"
         aria-label={ariaLabel}
-        onClick={() => setOpen((current) => !current)}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
       >
         <Icon name="more-horizontal" />
       </button>
@@ -604,7 +608,8 @@ function SidebarMoreMenu(props: {
               type="button"
               className={`sidebar-more-menu-item${item.danger ? " danger" : ""}`}
               disabled={item.disabled}
-              onClick={() => {
+              onClick={(event) => {
+                event.stopPropagation();
                 item.onClick();
                 setOpen(false);
               }}
@@ -786,6 +791,7 @@ export function MainShell(props: MainShellProps) {
     connectRemote,
     reconnectRemote,
     disconnectRemote,
+    selectRemote,
     selectSession,
     selectRemoteSession,
     saveRemote,
@@ -953,7 +959,7 @@ export function MainShell(props: MainShellProps) {
     activeProviderSelection?.model?.trim() ||
     activeProviderState?.saved_model?.trim() ||
     activeProviderSelection?.provider?.trim() ||
-    "未接入";
+    "default";
 
   function updateSelectedProviderDraft(
     field: keyof ModelSettingsProviderDraft,
@@ -1212,39 +1218,6 @@ export function MainShell(props: MainShellProps) {
     setBannerNotification(null);
     processedNotificationKeyRef.current = null;
   }, [activeRemoteId, state.currentSessionId]);
-
-  useEffect(() => {
-    const backgroundRemote = remoteEntries.find((entry) => {
-      const runtime = remoteRuntimeById[entry.id];
-      return entry.id !== activeRemoteId && runtime?.unreadCount && runtime.lastNotificationSessionId;
-    });
-    if (!backgroundRemote) {
-      return;
-    }
-    const runtime = remoteRuntimeById[backgroundRemote.id];
-    if (!runtime?.lastNotificationSessionId) {
-      return;
-    }
-    const message = runtime.lastNotificationMessage
-      ? `${backgroundRemote.name} 有新消息：${runtime.lastNotificationMessage}`
-      : `${backgroundRemote.name} 有新消息`;
-    const key = `remote-message::${backgroundRemote.id}::${runtime.lastNotificationSessionId}::${runtime.unreadCount}`;
-    if (processedNotificationKeyRef.current === key) {
-      return;
-    }
-    processedNotificationKeyRef.current = key;
-    setBannerNotification({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      tone: "success",
-      message,
-      source: "remote",
-      action: {
-        label: "查看",
-        remoteId: backgroundRemote.id,
-        sessionId: runtime.lastNotificationSessionId,
-      },
-    });
-  }, [activeRemoteId, remoteEntries, remoteRuntimeById, state.currentSessionId]);
 
   useEffect(() => {
     const candidates: Array<Omit<BannerNotificationState, "id"> | null> = [
@@ -1818,8 +1791,25 @@ export function MainShell(props: MainShellProps) {
                 const isConnected = runtime?.connectionStatus === "connected";
                 const isConnecting = runtime?.connectionStatus === "connecting";
                 const unreadCount = runtime?.unreadCount || 0;
+                const unreadSessionId = runtime?.lastUnreadSessionId || entry.profile.defaultSessionId || "";
                 return (
-                  <article key={entry.id} className="sidebar-entity-card compact">
+                  <article
+                    key={entry.id}
+                    className={`sidebar-entity-card compact remote-card${isActive ? " active" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => {
+                      if (!isActive) {
+                        selectRemote(entry.id);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (!isActive && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        selectRemote(entry.id);
+                      }
+                    }}
+                  >
                     <div className="sidebar-entity-title-row">
                       <div className="sidebar-entity-title">{entry.name}</div>
                       <div className="sidebar-remote-badge-group">
@@ -1843,7 +1833,10 @@ export function MainShell(props: MainShellProps) {
                           <button
                             type="button"
                             className="sidebar-inline-button"
-                            onClick={() => disconnectRemote(entry.id)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              disconnectRemote(entry.id);
+                            }}
                             disabled={isConnecting}
                           >
                             断开
@@ -1851,7 +1844,10 @@ export function MainShell(props: MainShellProps) {
                           <button
                             type="button"
                             className="sidebar-inline-button secondary"
-                            onClick={() => reconnectRemote(entry.id)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              reconnectRemote(entry.id);
+                            }}
                             disabled={isConnecting}
                           >
                             重连
@@ -1861,7 +1857,10 @@ export function MainShell(props: MainShellProps) {
                         <button
                           type="button"
                           className="sidebar-inline-button"
-                          onClick={() => connectRemote(entry.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            connectRemote(entry.id);
+                          }}
                           disabled={isConnecting}
                         >
                           {isConnecting ? "连接中..." : "连接"}
@@ -1881,6 +1880,18 @@ export function MainShell(props: MainShellProps) {
                           },
                         ]}
                       />
+                      {!isActive && unreadCount > 0 && unreadSessionId ? (
+                        <button
+                          type="button"
+                          className="sidebar-inline-button secondary"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            selectRemoteSession(entry.id, unreadSessionId);
+                          }}
+                        >
+                          查看消息
+                        </button>
+                      ) : null}
                     </div>
                   </article>
                 );

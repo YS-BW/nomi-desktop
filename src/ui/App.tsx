@@ -54,6 +54,7 @@ export interface RemoteRuntimeState {
   eventsConnected: boolean;
   errorText: string | null;
   unreadCount: number;
+  lastUnreadSessionId: string | null;
   lastActivityAt: number | null;
   lastNotificationSessionId: string | null;
   lastNotificationMessage: string | null;
@@ -69,6 +70,7 @@ const DISCONNECTED_REMOTE_RUNTIME: RemoteRuntimeState = {
   eventsConnected: false,
   errorText: null,
   unreadCount: 0,
+  lastUnreadSessionId: null,
   lastActivityAt: null,
   lastNotificationSessionId: null,
   lastNotificationMessage: null,
@@ -248,6 +250,13 @@ function readRemoteEventRole(event: SseEventEnvelope): string | null {
     ? (data.message as Record<string, unknown>)
     : null;
   return readString(message?.role) || readString(message?.kind);
+}
+
+function isAssistantMessageEvent(event: SseEventEnvelope): boolean {
+  if (event.type !== "session.message_appended") {
+    return false;
+  }
+  return readRemoteEventRole(event) === "assistant";
 }
 
 function createSystemNotificationKey(remoteId: string, event: SseEventEnvelope): string | null {
@@ -595,7 +604,7 @@ export function App() {
   }
 
   function maybeNotifySystemMessage(remoteId: string, event: SseEventEnvelope) {
-    if (event.type !== "session.message_appended") {
+    if (!isAssistantMessageEvent(event)) {
       return;
     }
     const sessionId = readRemoteEventSessionId(event);
@@ -614,13 +623,10 @@ export function App() {
     deliveredSystemNotificationKeysRef.current.add(key);
     const remoteName =
       remoteCatalogRef.current.remotes.find((entry) => entry.id === remoteId)?.name || "远端";
-    const role = readRemoteEventRole(event);
-    const prefix = role === "user" ? "用户消息" : role === "assistant" ? "Nomi 回复" : "新消息";
-    const summary =
-      readRemoteEventMessageSummary(event) || (role === "assistant" ? "Nomi 有新的回复" : "有新的消息");
+    const summary = readRemoteEventMessageSummary(event) || "Nomi 有新的回复";
     void sendSystemNotification({
       title: `Nomi - ${remoteName}`,
-      body: `${prefix}：${truncateText(summary, SYSTEM_NOTIFICATION_SUMMARY_LIMIT)}`,
+      body: `Nomi 回复：${truncateText(summary, SYSTEM_NOTIFICATION_SUMMARY_LIMIT)}`,
       group: `remote:${remoteId}`,
       key,
     });
@@ -630,8 +636,7 @@ export function App() {
     setRemoteRuntimeById((current) => {
       const previous = current[remoteId] || createRemoteRuntime();
       const shouldIncrementUnread =
-        remoteId !== activeRemoteIdRef.current &&
-        (event.type === "session.message_appended" || event.type === "session.updated");
+        remoteId !== activeRemoteIdRef.current && isAssistantMessageEvent(event);
       const sessionId = shouldIncrementUnread ? readRemoteEventSessionId(event) : null;
       const messageSummary = shouldIncrementUnread ? readRemoteEventMessageSummary(event) : null;
       const next = {
@@ -640,6 +645,7 @@ export function App() {
           ...previous,
           lastActivityAt: Date.now(),
           unreadCount: shouldIncrementUnread ? previous.unreadCount + 1 : previous.unreadCount,
+          lastUnreadSessionId: sessionId || previous.lastUnreadSessionId,
           lastNotificationSessionId: sessionId || previous.lastNotificationSessionId,
           lastNotificationMessage: messageSummary || previous.lastNotificationMessage,
         },
@@ -1348,6 +1354,7 @@ export function App() {
     dispatch({ type: "error/set", message: null });
     updateRemoteRuntime(remoteId, {
       unreadCount: 0,
+      lastUnreadSessionId: null,
       lastNotificationSessionId: null,
       lastNotificationMessage: null,
     });
@@ -1593,6 +1600,7 @@ export function App() {
       connectRemote={(remoteId) => void connectRemote(remoteId)}
       reconnectRemote={(remoteId) => void reconnectRemote(remoteId)}
       disconnectRemote={disconnectRemote}
+      selectRemote={(remoteId) => void selectRemote(remoteId)}
       selectSession={(sessionId) => void selectSession(sessionId)}
       selectRemoteSession={(remoteId, sessionId) => void selectRemoteSession(remoteId, sessionId)}
       saveRemote={saveRemoteEntryDraft}

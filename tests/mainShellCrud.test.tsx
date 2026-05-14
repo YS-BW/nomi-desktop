@@ -200,6 +200,7 @@ function renderShell(overrides: { actions?: Partial<ShellActions>; shellProps?: 
           eventsConnected: true,
           errorText: null,
           unreadCount: 0,
+          lastUnreadSessionId: null,
           lastActivityAt: null,
           lastNotificationSessionId: null,
           lastNotificationMessage: null,
@@ -209,6 +210,7 @@ function renderShell(overrides: { actions?: Partial<ShellActions>; shellProps?: 
       connectRemote={overrides.shellProps?.connectRemote || vi.fn()}
       reconnectRemote={overrides.shellProps?.reconnectRemote || vi.fn()}
       disconnectRemote={overrides.shellProps?.disconnectRemote || vi.fn()}
+      selectRemote={overrides.shellProps?.selectRemote || vi.fn()}
       selectSession={overrides.shellProps?.selectSession || vi.fn()}
       selectRemoteSession={overrides.shellProps?.selectRemoteSession || vi.fn()}
       saveRemote={overrides.shellProps?.saveRemote || vi.fn()}
@@ -248,6 +250,8 @@ describe("MainShell HTTP resource actions", () => {
   it("shows remote connection state per remote without the top status card", async () => {
     const profile = buildProfile();
     const disconnectRemote = vi.fn();
+    const selectRemote = vi.fn();
+    const selectRemoteSession = vi.fn();
     renderShell({
       shellProps: {
         remoteEntries: [
@@ -268,6 +272,7 @@ describe("MainShell HTTP resource actions", () => {
             eventsConnected: true,
             errorText: null,
             unreadCount: 0,
+            lastUnreadSessionId: null,
             lastActivityAt: null,
             lastNotificationSessionId: null,
             lastNotificationMessage: null,
@@ -280,12 +285,15 @@ describe("MainShell HTTP resource actions", () => {
             eventsConnected: true,
             errorText: null,
             unreadCount: 3,
+            lastUnreadSessionId: "desktop:bg-session",
             lastActivityAt: 1,
             lastNotificationSessionId: null,
             lastNotificationMessage: null,
           },
         },
         disconnectRemote,
+        selectRemote,
+        selectRemoteSession,
       },
     });
 
@@ -295,6 +303,10 @@ describe("MainShell HTTP resource actions", () => {
     expect(remoteSection).not.toBeNull();
     expect(within(remoteSection as HTMLElement).getByText("已连接")).toBeInTheDocument();
     expect(within(remoteSection as HTMLElement).getByText("3")).toBeInTheDocument();
+    fireEvent.click(remoteSection as HTMLElement);
+    expect(selectRemote).toHaveBeenCalledWith("remote-bg");
+    fireEvent.click(within(remoteSection as HTMLElement).getByRole("button", { name: "查看消息" }));
+    expect(selectRemoteSession).toHaveBeenCalledWith("remote-bg", "desktop:bg-session");
     fireEvent.click(within(remoteSection as HTMLElement).getByRole("button", { name: "断开" }));
     expect(disconnectRemote).toHaveBeenCalledWith("remote-bg");
   });
@@ -322,6 +334,7 @@ describe("MainShell HTTP resource actions", () => {
             eventsConnected: true,
             errorText: null,
             unreadCount: 0,
+            lastUnreadSessionId: null,
             lastActivityAt: null,
             lastNotificationSessionId: null,
             lastNotificationMessage: null,
@@ -334,6 +347,7 @@ describe("MainShell HTTP resource actions", () => {
             eventsConnected: false,
             errorText: null,
             unreadCount: 0,
+            lastUnreadSessionId: null,
             lastActivityAt: null,
             lastNotificationSessionId: null,
             lastNotificationMessage: null,
@@ -353,7 +367,7 @@ describe("MainShell HTTP resource actions", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("已删除远端“后台远端”。");
   });
 
-  it("shows clickable top notification for background remote messages", async () => {
+  it("does not show top notification for background remote messages", async () => {
     const profile = buildProfile();
     const selectRemoteSession = vi.fn();
     renderShell({
@@ -376,6 +390,7 @@ describe("MainShell HTTP resource actions", () => {
             eventsConnected: true,
             errorText: null,
             unreadCount: 0,
+            lastUnreadSessionId: null,
             lastActivityAt: null,
             lastNotificationSessionId: null,
             lastNotificationMessage: null,
@@ -388,6 +403,7 @@ describe("MainShell HTTP resource actions", () => {
             eventsConnected: true,
             errorText: null,
             unreadCount: 1,
+            lastUnreadSessionId: "desktop:bg-session",
             lastActivityAt: 1,
             lastNotificationSessionId: "desktop:bg-session",
             lastNotificationMessage: "后台消息",
@@ -397,10 +413,12 @@ describe("MainShell HTTP resource actions", () => {
       },
     });
 
-    const banner = await screen.findByRole("status");
-    expect(banner).toHaveTextContent("后台远端 有新消息：后台消息");
-    fireEvent.click(within(banner).getByRole("button", { name: /后台远端 有新消息/ }));
-    expect(selectRemoteSession).toHaveBeenCalledWith("remote-bg", "desktop:bg-session");
+    await openDisclosure("远端");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    const remoteSection = screen.getByText("后台远端").closest("article");
+    expect(remoteSection).not.toBeNull();
+    expect(within(remoteSection as HTMLElement).getByText("1")).toBeInTheDocument();
+    expect(selectRemoteSession).not.toHaveBeenCalled();
   });
 
   it("creates a task through explicit createTask action", async () => {
