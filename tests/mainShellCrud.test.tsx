@@ -78,7 +78,7 @@ function buildSidebarData(): DesktopSidebarData {
 }
 
 function buildProviderState(): ProviderStateSnapshot {
-  return {
+  const providerState = {
     active: { provider: "mimo", model: "mimo-chat" },
     apply_mode: "reload_runtime",
     providers: [
@@ -119,6 +119,7 @@ function buildProviderState(): ProviderStateSnapshot {
       },
     ],
   };
+  return providerState as ProviderStateSnapshot;
 }
 
 function buildState() {

@@ -201,6 +201,13 @@ interface ModelSettingsProviderItem {
   source?: string | null;
 }
 
+type DesktopProviderStateItem = ProviderStateItem & {
+  api_key?: string | null;
+  token_plan_api_key_set?: boolean | null;
+  token_plan_api_key?: string | null;
+  token_plan_api_key_preview?: string | null;
+};
+
 interface ModelSettingsProviderDraft {
   apiBase: string;
   apiKey: string;
@@ -887,10 +894,13 @@ export function MainShell(props: MainShellProps) {
       }, {}),
     [providerCatalogItems],
   );
-  const providerStateItems = useMemo(() => state.providerState?.providers || [], [state.providerState]);
+  const providerStateItems = useMemo<DesktopProviderStateItem[]>(
+    () => (state.providerState?.providers || []) as DesktopProviderStateItem[],
+    [state.providerState],
+  );
   const providerStateByName = useMemo(
     () =>
-      providerStateItems.reduce<Record<string, ProviderStateItem>>((acc, item) => {
+      providerStateItems.reduce<Record<string, DesktopProviderStateItem>>((acc, item) => {
         acc[item.provider] = item;
         return acc;
       }, {}),
